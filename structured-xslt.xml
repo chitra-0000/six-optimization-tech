@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0"
+                xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+
+    <xsl:output method="xml" indent="yes"/>
+    <xsl:strip-space elements="*"/>
+
+    <xsl:template match="/">
+        <STRUCTURED_FILES>
+            <xsl:apply-templates
+                    select="SANCTIONS_STRUCTURED_PRODUCTS/INSTRUMENTS/INSTRUMENT"/>
+        </STRUCTURED_FILES>
+    </xsl:template>
+
+    <xsl:template match="INSTRUMENT">
+        <xsl:for-each select="TARGETS/TARGET">
+            <STRUCTURED_FILE>
+            <!-- ========= HOST IDENTIFIERS ========= -->
+            <HOST_CH>
+                <xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='CH']/VALUE"/>
+            </HOST_CH>
+
+            <HOST_ISIN>
+                <xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='ISIN']/VALUE"/>
+            </HOST_ISIN>
+
+            <HOST_GK>
+                <xsl:value-of select="../../HOST_GK"/>
+            </HOST_GK>
+
+            <HOST_ISSUER_SHORTNAME>
+                <xsl:value-of select="../../HOST_ISSUER_SHORTNAME"/>
+            </HOST_ISSUER_SHORTNAME>
+
+            <DESCRIPTION>
+                <xsl:value-of select="../../DESCRIPTION"/>
+            </DESCRIPTION>
+
+            <FISN>
+                <xsl:value-of select="../../FISN"/>
+            </FISN>
+
+            <INDICATIVE_ISSUE_DATE>
+                <xsl:value-of select="../../INDICATIVE_ISSUE_DATE"/>
+            </INDICATIVE_ISSUE_DATE>
+
+            <SETTLEMENT_STYLE>
+                <xsl:value-of select="../../SETTLEMENT_STYLE"/>
+            </SETTLEMENT_STYLE>
+
+            <INSTRUMENT_TYPE>
+                <xsl:value-of select="../../INSTRUMENT_TYPE"/>
+            </INSTRUMENT_TYPE>
+
+            <DENOMINATION_CURRENCY>
+                <xsl:value-of select="../../DENOMINATION_CURRENCY"/>
+            </DENOMINATION_CURRENCY>
+
+            <MATURITY_DATE>
+                <xsl:value-of select="../../MATURITY_DATE"/>
+            </MATURITY_DATE>
+
+            <ACTIVE_FLAG>
+                <xsl:value-of select="../../ACTIVE_FLAG"/>
+            </ACTIVE_FLAG>
+
+            <ISSUE_DATE>
+                <xsl:value-of select="../../ISSUE_DATE"/>
+            </ISSUE_DATE>
+
+            <DATE_OPENED_IN_SIX>
+                <xsl:value-of select="../../DATE_OPENED_IN_SIX"/>
+            </DATE_OPENED_IN_SIX>
+
+            <SUBSTITUTE_ISSUE_DATE>
+                <xsl:value-of select="../../SUBSTITUTE_ISSUE_DATE"/>
+            </SUBSTITUTE_ISSUE_DATE>
+
+            <!-- ========= UNDERLYING ========= -->
+            <UNDERLYING_CH>
+                <xsl:value-of select="../../UNDERLYING/IDENTIFIER[@TYPE='CH']/VALUE"/>
+            </UNDERLYING_CH>
+
+            <UNDERLYING_ISIN>
+                <xsl:value-of select="../../UNDERLYING/IDENTIFIER[@TYPE='ISIN']/VALUE"/>
+            </UNDERLYING_ISIN>
+
+            <UNDERLYING_GK>
+                <xsl:value-of select="../../UNDERLYING_GK"/>
+            </UNDERLYING_GK>
+
+            <UNDERLYING_ISSUER_SHORTNAME>
+                <xsl:value-of select="../../UNDERLYING_ISSUER_SHORTNAME"/>
+            </UNDERLYING_ISSUER_SHORTNAME>
+
+            <SEDOL><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='SEDOL']/VALUE"/></SEDOL>
+            <CUSIP><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='CUSIP']/VALUE"/></CUSIP>
+            <CINS><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='CINS']/VALUE"/></CINS>
+            <AUSTRIAN><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='AUSTRIAN']/VALUE"/></AUSTRIAN>
+            <BELGIAN><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='BELGIAN']/VALUE"/></BELGIAN>
+            <CANADIAN><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='CANADIAN']/VALUE"/></CANADIAN>
+            <GERMAN><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='GERMAN']/VALUE"/></GERMAN>
+            <DENMARK><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='DENMARK']/VALUE"/></DENMARK>
+            <FRANCE_RGA><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='FRANCE_RGA']/VALUE"/></FRANCE_RGA>
+            <FRANCE_EUROCLEAR><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='FRANCE_EUROCLEAR']/VALUE"/></FRANCE_EUROCLEAR>
+            <ITALIAN><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='ITALIAN']/VALUE"/></ITALIAN>
+            <JAPANESE_CURRENT><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='JAPANESE_CURRENT']/VALUE"/></JAPANESE_CURRENT>
+            <JAPANESE_NEW><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='JAPANESE_NEW']/VALUE"/></JAPANESE_NEW>
+            <LUXEMBOURG><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='LUXEMBOURG']/VALUE"/></LUXEMBOURG>
+            <NETHERLAND><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='NETHERLAND']/VALUE"/></NETHERLAND>
+            <NORWEGIAN><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='NORWEGIAN']/VALUE"/></NORWEGIAN>
+            <SWEDISH><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='SWEDISH']/VALUE"/></SWEDISH>
+            <XS_INT_NUMBER><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='XS_INT_NUMBER']/VALUE"/></XS_INT_NUMBER>
+            <PORTUGAL><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='PORTUGAL']/VALUE"/></PORTUGAL>
+            <SOUTH_KOREA><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='SOUTH_KOREA']/VALUE"/></SOUTH_KOREA>
+            <HONG_KONG><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='HONG_KONG']/VALUE"/></HONG_KONG>
+            <FIGI_GLOBAL_ID><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='FIGI_GLOBAL_ID']/VALUE"/></FIGI_GLOBAL_ID>
+            <!-- TODO: this line was cut off at the right edge after '/VAL' - check the ending in the IDE -->
+            <FIGI_GLOBAL_SHARE_CLASS_ID><xsl:value-of select="../../HOST/IDENTIFIER[@TYPE='FIGI_GLOBAL_SHARE_CLASS_LEVEL_ID']/VALUE"/></FIGI_GLOBAL_SHARE_CLASS_ID>
+            <CONFIDENCE_LEVEL/>
+
+            <REGIMES>
+                <xsl:for-each select="REGIMES/REGIME[normalize-space(OLS)='Yes']">
+                    <xsl:value-of select="concat(@NAME, ' - ', LEGAL_BASIS)"/>
+                    <xsl:if test="position()!=last()">
+                        <xsl:text> </xsl:text>
+                    </xsl:if>
+                </xsl:for-each>
+            </REGIMES>
+
+            <TARGETS>
+                <xsl:variable name="targetName" select="@NAME"/>
+                <xsl:for-each select="REGIMES/REGIME">
+                    <SIX_TARGET>
+                        <TARGET><xsl:value-of select="$targetName"/></TARGET>
+                        <REGIME><xsl:value-of select="@NAME"/></REGIME>
+                        <LEGAL_BASIS>
+                            <xsl:choose>
+                                <xsl:when test="normalize-space(LEGAL_BASIS) = 'N.E.'"/>
+                                <xsl:otherwise>
+                                    <xsl:value-of select="LEGAL_BASIS"/>
+                                </xsl:otherwise>
+                            </xsl:choose>
+                        </LEGAL_BASIS>
+                        <SANCTIONED><xsl:value-of select="../../SANCTIONED"/></SANCTIONED>
+                        <STATUS><xsl:value-of select="../../STATUS"/></STATUS>
+                        <REASON_FOR_CHANGE><xsl:value-of select="../../REASON_FOR_CHANGE"/></REASON_FOR_CHANGE>
+                    </SIX_TARGET>
+                </xsl:for-each>
+            </TARGETS>
+
+            </STRUCTURED_FILE>
+        </xsl:for-each>
+    </xsl:template>
+
+</xsl:stylesheet>

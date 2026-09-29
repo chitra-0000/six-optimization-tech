@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0"
+                xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+
+    <xsl:template name="value-or-empty">
+        <xsl:param name="expr"/>
+        <xsl:choose>
+            <xsl:when test="$expr">
+                <xsl:value-of select="normalize-space($expr)"/>
+            </xsl:when>
+            <xsl:otherwise/>
+        </xsl:choose>
+    </xsl:template>
+
+    <xsl:template match="/SANCTIONS_OPTIONS">
+        <OptionsFiles>
+            <xsl:apply-templates select="INSTRUMENTS/INSTRUMENT"/>
+        </OptionsFiles>
+    </xsl:template>
+
+
+    <xsl:template match="INSTRUMENT">
+        <xsl:for-each select="TARGETS/TARGET">
+            <OptionsFile>
+
+            <CH_OPTION>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../OPTION/IDENTIFIER[@TYPE='CH']/VALUE"/>
+                </xsl:call-template>
+            </CH_OPTION>
+
+            <ISIN_OPTION>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../OPTION/IDENTIFIER[@TYPE='ISIN']/VALUE"/>
+                </xsl:call-template>
+            </ISIN_OPTION>
+
+            <FIGI_GLOBAL_ID>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../OPTION/IDENTIFIER[@TYPE='FIGI_GLOBAL_ID']/VALUE"/>
+                </xsl:call-template>
+            </FIGI_GLOBAL_ID>
+
+            <DESCRIPTION>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../DESCRIPTION"/>
+                </xsl:call-template>
+            </DESCRIPTION>
+
+            <FISN>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../FISN"/>
+                </xsl:call-template>
+            </FISN>
+
+            <ISSUER_GK>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../OPTION_ISSUER_GK"/>
+                </xsl:call-template>
+            </ISSUER_GK>
+
+            <ISSUER_NAME>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../OPTION_ISSUER_SHORTNAME"/>
+                </xsl:call-template>
+            </ISSUER_NAME>
+
+            <DATE_OPENED_IN_SIX>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../DATE_OPENED_IN_SIX"/>
+                </xsl:call-template>
+            </DATE_OPENED_IN_SIX>
+
+            <EXPIRY_DATE>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../EXPIRY_DATE"/>
+                </xsl:call-template>
+            </EXPIRY_DATE>
+
+            <INSTRUMENT_TYPE>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../INSTRUMENT_TYPE"/>
+                </xsl:call-template>
+            </INSTRUMENT_TYPE>
+
+            <DENOMINATION_CURRENCY>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../DENOMINATION_CURRENCY"/>
+                </xsl:call-template>
+            </DENOMINATION_CURRENCY>
+
+            <ACTIVE_FLAG>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../ACTIVE_FLAG"/>
+                </xsl:call-template>
+            </ACTIVE_FLAG>
+
+            <!--   Underlying information  -->
+            <UNDERLYING_CH>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../UNDERLYING/IDENTIFIER[@TYPE='CH']/VALUE"/>
+                </xsl:call-template>
+            </UNDERLYING_CH>
+
+            <UNDERLYING_ISIN>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../UNDERLYING/IDENTIFIER[@TYPE='ISIN']/VALUE"/>
+                </xsl:call-template>
+            </UNDERLYING_ISIN>
+
+            <UNDERLYING_ISSUER_GK>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../UNDERLYING_GK"/>
+                </xsl:call-template>
+            </UNDERLYING_ISSUER_GK>
+
+            <UNDERLYING_ISSUER_NAME>
+                <xsl:call-template name="value-or-empty">
+                    <xsl:with-param name="expr" select="../../UNDERLYING_ISSUER_SHORTNAME"/>
+                </xsl:call-template>
+            </UNDERLYING_ISSUER_NAME>
+
+            <SEDOL/><CUSIP/><CINS/><AUSTRIAN/><BELGIAN/><CANADIAN/><GERMAN/>
+            <DENMARK/><FRANCE_RGA/><FRANCE_EUROCLEAR/><ITALIAN/>
+            <JAPANESE_CURRENT/><JAPANESE_NEW/><LUXEMBOURG/><NETHERLAND/>
+            <NORWEGIAN/><SWEDISH/><XS_INT_NUMBER/><PORTUGAL/><SOUTH_KOREA/>
+            <HONG_KONG/><FIGI_GLOBAL_SHARE_CLASS_ID/>
+            <CONFIDENCE_LEVEL/>
+
+            <TARGETS>
+                <xsl:variable name="targetName" select="@NAME"/>
+                <xsl:for-each select="REGIMES/REGIME">
+                    <SIX_TARGET>
+                        <TARGET><xsl:value-of select="$targetName"/></TARGET>
+                        <REGIME><xsl:value-of select="@NAME"/></REGIME>
+                        <LEGAL_BASIS>
+                            <xsl:choose>
+                                <xsl:when test="normalize-space(LEGAL_BASIS) = 'N.E.'"/>
+                                <xsl:otherwise>
+                                    <xsl:value-of select="LEGAL_BASIS"/>
+                                </xsl:otherwise>
+                            </xsl:choose>
+                        </LEGAL_BASIS>
+                        <SANCTIONED><xsl:value-of select="../../SANCTIONED"/></SANCTIONED>
+                        <SANCTIONS_RATIONALE><xsl:value-of select="../../SANCTIONS_RATIONALE"/></SANCTIONS_RATIONALE>
+                        <STATUS><xsl:value-of select="../../STATUS"/></STATUS>
+                        <REASON_FOR_CHANGE><xsl:value-of select="../../REASON_FOR_CHANGE"/></REASON_FOR_CHANGE>
+                    </SIX_TARGET>
+                </xsl:for-each>
+            </TARGETS>
+
+            </OptionsFile>
+        </xsl:for-each>
+    </xsl:template>
+
+</xsl:stylesheet>
