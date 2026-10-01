@@ -1,0 +1,19 @@
+package com.bnpp.regliss.entity;
+
+import javax.persistence.EntityListeners;
+import javax.persistence.MappedSuperclass;
+// + your project imports: AbstractEntity, TruncateStringFieldsListener, AuditUtil
+
+@MappedSuperclass
+@EntityListeners(TruncateStringFieldsListener.class)
+public abstract class AbstractSimpleEntity extends AbstractEntity<Long> {
+
+    @Override
+    public String toString() {
+        return this.getClass().getSimpleName() + "{id=" + getId() + ",instance=" + System.identityHashCode(this) + "}";
+    }
+
+    public String toStringAudit() {
+        return AuditUtil.auditedFieldsToString(this);
+    }
+}
