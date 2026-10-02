@@ -25,9 +25,10 @@ import java.util.function.Function;
  *    only the batches being written are in memory, never the whole file.
  *  - Batches of six.db.batch rows are written by automatic.import.db.thread.pool.size
  *    threads (SixImportExecutor; the shared BackpressureExecutor is not used or changed), each batch in its own transaction.
- *  - A failed batch is counted and the import FAILS at the end. Before, a failed batch
- *    was only logged and up to 1000 sanctions records disappeared while the run still
- *    looked successful.
+ *  - FAIL FAST: on the first failed batch the file is no longer read and no further batch is
+ *    written; batches already running finish, and the import fails. The caller then removes
+ *    every row already committed for this version. (Before, a failed batch was only logged and
+ *    up to 1000 sanctions records disappeared while the run still looked successful.)
  *  - No @Transactional here: the old class-level @Transactional kept a connection open
  *    for the whole import for nothing.
  */
@@ -82,6 +83,10 @@ public class SixBatchImportRunner {
 
         try {
             stream.forEach(transformedXml, recordElement, dtoClass, dto -> {
+                // FAIL FAST: once a batch has failed, stop reading the file - no new batch is written.
+                if (failOnBatchError && firstError.get() != null) {
+                    throw new StopAfterFailedBatch();
+                }
                 current.add(mapper.apply(dto));
                 if (current.size() >= dbBatchSize) {
                     submit(executor, writer, new ArrayList<>(current), version, list, batchExecutionId,
@@ -89,10 +94,12 @@ public class SixBatchImportRunner {
                     current.clear();
                 }
             });
-            if (!current.isEmpty()) {
+            if (!current.isEmpty() && !(failOnBatchError && firstError.get() != null)) {
                 submit(executor, writer, new ArrayList<>(current), version, list, batchExecutionId,
                         totalRecords, persisted, failed, firstError);
             }
+        } catch (StopAfterFailedBatch stop) {
+            log.warn("[{}] a batch failed - stopped reading the file, no further batches are written", label);
         } finally {
             executor.waitUntilFinished();
         }
@@ -100,10 +107,10 @@ public class SixBatchImportRunner {
         log.info("[{}] DB write finished in {}s: {} persisted, {} failed (of {})",
                 label, (System.currentTimeMillis() - start) / 1000, persisted.get(), failed.get(), totalRecords);
 
-        if (failed.get() > 0 && failOnBatchError) {
-            throw new ReglissException("SIX " + label + " import incomplete: " + failed.get() + " of " + totalRecords
-                    + " records were not saved. First error: "
-                    + (firstError.get() == null ? "n/a" : firstError.get().getMessage()));
+        if (firstError.get() != null && failOnBatchError) {
+            // The caller (AutomaticSixImportXmlService) deletes the rows already committed for this version.
+            throw new ReglissException("SIX " + label + " import failed after " + persisted.get() + " of " + totalRecords
+                    + " records were saved (they will be removed). First error: " + firstError.get().getMessage());
         }
         return persisted.get();
     }
@@ -112,6 +119,10 @@ public class SixBatchImportRunner {
                             Version version, ReglissList list, long batchExecutionId, int totalRecords,
                             AtomicInteger persisted, AtomicInteger failed, AtomicReference<Exception> firstError) {
         executor.blockingSubmit(() -> {
+            // A batch that was already queued when another batch failed is not written.
+            if (failOnBatchError && firstError.get() != null) {
+                return;
+            }
             try {
                 writer.write(batch, version, list);
                 persisted.addAndGet(batch.size());
@@ -123,5 +134,12 @@ public class SixBatchImportRunner {
                 log.error("Failed to persist batch of size {}", batch.size(), e);
             }
         });
+    }
+
+    /** Internal signal used to stop reading the file after the first failed batch. */
+    private static final class StopAfterFailedBatch extends RuntimeException {
+        StopAfterFailedBatch() {
+            super(null, null, false, false);   // no stack trace: it is a control signal, not an error
+        }
     }
 }
