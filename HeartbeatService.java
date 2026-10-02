@@ -3,6 +3,7 @@ package com.bnpp.regliss.batch.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.system.ApplicationPid;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -12,7 +13,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
-import static com.bnpp.regliss.entity.Heartbeat.CftPublishingStatus.ACTIVE;
+import static com.bnpp.regliss.entity.Heartbeat.CftPublishingStatus.ACTIVE;   // TODO: check the package of Heartbeat in the IDE
 import static java.util.function.Predicate.not;
 import static java.util.stream.Collectors.toList;
 
@@ -45,6 +46,7 @@ public class HeartbeatService {
         Heartbeat heartbeat = heartbeatRepo.findByNodeId(nodeDetailsSupplier.getNodeId()).orElseThrow(this::shouldHaveHeartbeatException);
         return Heartbeat.CftPublishingStatus.ACTIVE==heartbeat.getCftPublishingStatus();
     }
+
 
     public void markNodeAsActivePublisher() {
 
@@ -162,4 +164,5 @@ public class HeartbeatService {
     private boolean hasBatchActiveProfile(Heartbeat heartbeat) {
         return heartbeat.getActiveProfiles().contains(ReglissProfile.REGLISS_BATCH);
     }
+
 }
