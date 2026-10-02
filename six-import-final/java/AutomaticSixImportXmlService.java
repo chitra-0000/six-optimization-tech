@@ -19,6 +19,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -69,6 +70,20 @@ public class AutomaticSixImportXmlService {
 
     @Autowired
     private SixJdbcBulkWriter bulkWriter;
+
+    /**
+     * Folder for the temporary XSLT output (about 2.7 x the size of the input file).
+     * Empty (default) = the JVM temp folder java.io.tmpdir, which is /applis/11672-regli/tmp
+     * on the servers (-Djava.io.tmpdir in the JVM arguments).
+     */
+    @Value("${temp.file.folder}")
+    private String baseTempFolder;
+
+    /** Temp files created by this service start with this prefix (used by the stale-file cleanup). */
+    private static final String TEMP_PREFIX = "six-import-";
+
+    /** A leftover temp file older than this can only come from a crashed/killed JVM. */
+    private static final long STALE_TEMP_FILE_HOURS = 24;
 
     private final Map<ImportFileType, Templates> templatesCache = new ConcurrentHashMap<>();
 
@@ -130,8 +145,10 @@ public class AutomaticSixImportXmlService {
 
     private File transformToTempFile(Supplier<UnicodeBOMInputStream> xmlSupplier, ImportFileType fileType)
             throws IOException, TransformerException {
-        // java.io.tmpdir = /applis/11672-regli/tmp on the servers (JVM argument).
-        File out = File.createTempFile("six-" + fileType.name().toLowerCase() + "-", ".xml");
+        File dir = tempDir();
+        deleteStaleTempFiles(dir);
+        File out = File.createTempFile(TEMP_PREFIX + fileType.name().toLowerCase() + "-", ".xml", dir);
+        log.info("SIX {} XSLT output -> {}", fileType, out.getAbsolutePath());
         try (UnicodeBOMInputStream in = xmlSupplier.get();
              OutputStream os = new BufferedOutputStream(Files.newOutputStream(out.toPath()), 1 << 16)) {
             templatesFor(fileType).newTransformer().transform(new StreamSource(in), new StreamResult(os));
@@ -166,6 +183,36 @@ public class AutomaticSixImportXmlService {
                 return transformerFileSixOptionAutomatic;
             default:
                 throw new IllegalArgumentException("Not a SIX file type: " + fileType);
+        }
+    }
+
+    /** six.import.temp.dir if set (created if missing), otherwise java.io.tmpdir. */
+    private File tempDir() throws IOException {
+        if (baseTempFolder == null || baseTempFolder.trim().isEmpty()) {
+            return new File(System.getProperty("java.io.tmpdir"));
+        }
+        File dir = new File(baseTempFolder.trim());
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new IOException("Cannot create SIX import temp folder " + dir.getAbsolutePath());
+        }
+        return dir;
+    }
+
+    /**
+     * The temp file is always deleted at the end of an import (success or failure). Only a JVM
+     * that is killed or crashes mid-import can leave one behind; such files are removed here
+     * at the start of the next import, once they are older than 24 hours (never a running one).
+     */
+    private void deleteStaleTempFiles(File dir) {
+        File[] stale = dir.listFiles((d, name) -> name.startsWith(TEMP_PREFIX) && name.endsWith(".xml"));
+        if (stale == null) {
+            return;
+        }
+        long limit = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(STALE_TEMP_FILE_HOURS);
+        for (File f : stale) {
+            if (f.lastModified() < limit && f.delete()) {
+                log.info("Removed stale SIX import temp file {}", f.getAbsolutePath());
+            }
         }
     }
 
