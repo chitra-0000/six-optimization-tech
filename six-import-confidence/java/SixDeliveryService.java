@@ -153,30 +153,40 @@ public class SixDeliveryService {
      */
     public void rollbackDelivery(Long key, Long failedJobId, String reason) {
         log.error("SIX delivery {} is rolled back: {}", key, reason);
-
         if (key != null) {
-            for (String fileName : filesInInputFolder(key).values()) {
-                try {
-                    if (sixFileRepo.moveToErrorDirectoryIfPresent(fileName)) {
-                        log.info("SIX {} moved to the error folder", fileName);
-                    }
-                } catch (RuntimeException e) {
-                    log.error("SIX delivery {}: could not move {} to the error folder", key, fileName, e);
-                }
-            }
-            for (WaitingRow row : waitingRows()) {
-                if (key.equals(row.key)) {
-                    try {
-                        rollbackWaitingFile(row, key, reason);
-                    } catch (RuntimeException e) {
-                        // the row is still there: the confidence poller sees the cancelled delivery and retries the rollback
-                        log.error("SIX delivery {}: rollback of {} failed, will be retried", key, row, e);
-                    }
-                }
-            }
+            moveDeliveryFilesToError(key);
+            rollbackWaitingFiles(key, reason);
         }
         if (failedJobId != null) {
             closeJob(failedJobId, User.SYS_USERNAME);
+        }
+    }
+
+    /** Step 1: every file of the delivery still in IN goes to ERROR (so files not started yet are never imported). */
+    private void moveDeliveryFilesToError(Long key) {
+        for (String fileName : filesInInputFolder(key).values()) {
+            try {
+                if (sixFileRepo.moveToErrorDirectoryIfPresent(fileName)) {
+                    log.info("SIX {} moved to the error folder", fileName);
+                }
+            } catch (RuntimeException e) {
+                log.error("SIX delivery {}: could not move {} to the error folder", key, fileName, e);
+            }
+        }
+    }
+
+    /** Step 2: every file of the delivery waiting at 90% is rolled back. */
+    private void rollbackWaitingFiles(Long key, String reason) {
+        for (WaitingRow row : waitingRows()) {
+            if (!key.equals(row.key)) {
+                continue;
+            }
+            try {
+                rollbackWaitingFile(row, key, reason);
+            } catch (RuntimeException e) {
+                // the row is still there: the confidence poller sees the cancelled delivery and retries the rollback
+                log.error("SIX delivery {}: rollback of {} failed, will be retried", key, row, e);
+            }
         }
     }
 

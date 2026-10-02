@@ -7,7 +7,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Optional;
 
 // TODO: re-add project imports (Alt+Enter / Optimize Imports) for:
 // ReglissBatchProfile, CloseResourcesAfter, BatchProgressService, HeartbeatService,
@@ -59,89 +58,99 @@ public class SixBatchConfidencePoller {
     @CloseResourcesAfter
     public void generateExportFiles() {
         requestContext.setCurrentUser(referenceService.getSysUser());
+        deliveryService.findWaitingDelivery().ifPresent(this::process);
+    }
 
-        Optional<SixDeliveryService.Delivery> found = deliveryService.findWaitingDelivery();
-        if (!found.isPresent()) {
-            return;
-        }
-        SixDeliveryService.Delivery delivery = found.get();
+    private void process(SixDeliveryService.Delivery delivery) {
         log.debug("{}", delivery);
-
         if (delivery.isFinishing()) {
             finishDelivery(delivery);            // resume a finish interrupted on this or another server
             return;
         }
+        if (isReadyForConfidence(delivery) && mergeAll(delivery)) {
+            finishWhenAllMerged(delivery.getKey());
+        }
+    }
+
+    /** Step 1: every file imported? Rolls back a cancelled or incomplete delivery. */
+    private boolean isReadyForConfidence(SixDeliveryService.Delivery delivery) {
         if (delivery.isCancelled()) {
             deliveryService.rollbackDelivery(delivery.getKey(), null, "a file of the delivery was moved out of the IN folder");
-            return;
+            return false;
         }
         if (delivery.hasPendingOrRunning()) {
-            return;                              // other files still importing: keep waiting at 90%
+            return false;                        // other files still importing: keep waiting at 90%
         }
         if (!delivery.instrument().isPresent()) {
             deliveryService.rollbackDelivery(delivery.getKey(), null, "no instrument file in the delivery");
-            return;
+            return false;
         }
+        return true;
+    }
 
-        // ---- step 2: confidence merges, one per dependent file, exactly once ----
-        long instrumentVersionId = delivery.instrument().get().getRow().getVersionId();
+    /** Step 2: one confidence merge per dependent file, exactly once. False if the delivery was rolled back. */
+    private boolean mergeAll(SixDeliveryService.Delivery delivery) {
+        Long instrumentVersionId = delivery.instrument()
+                .map(SixDeliveryService.DeliveryFile::getRow)
+                .map(SixDeliveryService.WaitingRow::getVersionId)
+                .orElse(null);
+        if (instrumentVersionId == null) {
+            deliveryService.rollbackDelivery(delivery.getKey(), null, "the instrument file has no version");
+            return false;
+        }
         for (SixDeliveryService.DeliveryFile file : delivery.members()) {
-            if (file.confidenceDone()) {
-                continue;
-            }
-            try {
-                deliveryService.keepWaitingFilesAlive(-1L);
-                long start = System.currentTimeMillis();
-                int updated = store.mergeConfidenceOnce(file.getRow().getExportId(), file.getKind(),
-                        file.getRow().getVersionId(), instrumentVersionId, deliveryService.currentNodeId());
-                if (updated >= 0) {
-                    log.info("SIX delivery {}: confidence of {} updated from the instrument file: {} rows in {}s",
-                            delivery.getKey(), file.getKind(), updated, (System.currentTimeMillis() - start) / 1000);
-                    batchProgressService.incrementExportBatchForSix(file.getJobId(), MERGE_DONE_PERCENT);
-                } else {
-                    log.debug("SIX delivery {}: {} merged by another server", delivery.getKey(), file.getKind());
-                }
-            } catch (Exception e) {
-                log.error("SIX delivery {}: confidence update of {} failed", delivery.getKey(), file.getKind(), e);
-                deliveryService.rollbackDelivery(delivery.getKey(), null,
-                        "confidence update of " + file.getKind() + " failed: " + e.getMessage());
-                return;
+            if (!file.confidenceDone() && !mergeOne(delivery, file, instrumentVersionId)) {
+                return false;
             }
         }
+        return true;
+    }
 
-        // ---- step 3: finish, by one server only ----
-        Optional<SixDeliveryService.Delivery> reloaded = deliveryService.findWaitingDelivery();
-        if (!reloaded.isPresent() || !reloaded.get().getKey().equals(delivery.getKey())) {
-            return;
+    private boolean mergeOne(SixDeliveryService.Delivery delivery, SixDeliveryService.DeliveryFile file, long instrumentVersionId) {
+        try {
+            deliveryService.keepWaitingFilesAlive(-1L);
+            long start = System.currentTimeMillis();
+            int updated = store.mergeConfidenceOnce(file.getRow().getExportId(), file.getKind(),
+                    file.getRow().getVersionId(), instrumentVersionId, deliveryService.currentNodeId());
+            if (updated >= 0) {
+                log.info("SIX delivery {}: confidence of {} updated from the instrument file: {} rows in {}s",
+                        delivery.getKey(), file.getKind(), updated, (System.currentTimeMillis() - start) / 1000);
+                batchProgressService.incrementExportBatchForSix(file.getJobId(), MERGE_DONE_PERCENT);
+            } else {
+                log.debug("SIX delivery {}: {} merged by another server", delivery.getKey(), file.getKind());
+            }
+            return true;
+        } catch (Exception e) {
+            log.error("SIX delivery {}: confidence update of {} failed", delivery.getKey(), file.getKind(), e);
+            deliveryService.rollbackDelivery(delivery.getKey(), null,
+                    "confidence update of " + file.getKind() + " failed: " + e.getMessage());
+            return false;
         }
-        delivery = reloaded.get();
-        boolean allMerged = delivery.members().stream().allMatch(SixDeliveryService.DeliveryFile::confidenceDone);
-        if (!allMerged) {
+    }
+
+    /** Step 3: when every merge is done (here or on the other server), ONE server finishes the delivery. */
+    private void finishWhenAllMerged(Long key) {
+        SixDeliveryService.Delivery delivery = deliveryService.findWaitingDelivery()
+                .filter(d -> d.getKey().equals(key))
+                .orElse(null);
+        if (delivery == null
+                || !delivery.members().stream().allMatch(SixDeliveryService.DeliveryFile::confidenceDone)) {
             return;                              // another server is still merging: next tick
         }
-        long instrumentRowId = delivery.instrument().get().getRow().getExportId();
-        if (store.takeRow(instrumentRowId, deliveryService.currentNodeId())) {
+        Long instrumentRowId = delivery.instrument()
+                .map(SixDeliveryService.DeliveryFile::getRow)
+                .map(SixDeliveryService.WaitingRow::getExportId)
+                .orElse(null);
+        if (instrumentRowId != null && store.takeRow(instrumentRowId, deliveryService.currentNodeId())) {
             finishDelivery(deliveryService.findWaitingDelivery().orElse(delivery));
         }
     }
 
     private void finishDelivery(SixDeliveryService.Delivery delivery) {
         SixDeliveryService.DeliveryFile instrument = delivery.instrument().orElse(null);
-        if (instrument == null || instrument.getRow() == null) {
+        if (instrument == null || instrument.getRow() == null || !holdsFinishMark(delivery, instrument.getRow())) {
             return;
         }
-        String me = deliveryService.currentNodeId();
-        String holder = instrument.getRow().getBatchNodeId();
-        if (holder != null && !holder.equals(me)) {
-            if (heartbeatService.isNodeAlive(holder)) {
-                return;                          // the other server is finishing it
-            }
-            if (!store.takeOverRow(instrument.getRow().getExportId(), holder, me)) {
-                return;
-            }
-            log.warn("SIX delivery {}: server {} stopped while finishing, taken over by {}", delivery.getKey(), holder, me);
-        }
-
         try {
             // dependent files first, the instrument (which holds the "finishing" mark) last
             for (SixDeliveryService.DeliveryFile file : delivery.members()) {
@@ -155,5 +164,19 @@ public class SixBatchConfidencePoller {
             // Nothing is lost: the instrument row still marks the delivery as finishing, the next tick resumes it.
             log.error("SIX delivery {}: finishing failed, will be resumed at the next tick", delivery.getKey(), e);
         }
+    }
+
+    /** True if this server holds the instrument row, taking it over from a server that is no longer alive. */
+    private boolean holdsFinishMark(SixDeliveryService.Delivery delivery, SixDeliveryService.WaitingRow instrumentRow) {
+        String me = deliveryService.currentNodeId();
+        String holder = instrumentRow.getBatchNodeId();
+        if (holder == null || holder.equals(me)) {
+            return true;
+        }
+        if (heartbeatService.isNodeAlive(holder) || !store.takeOverRow(instrumentRow.getExportId(), holder, me)) {
+            return false;                        // the other server is finishing it (or took it over first)
+        }
+        log.warn("SIX delivery {}: server {} stopped while finishing, taken over by {}", delivery.getKey(), holder, me);
+        return true;
     }
 }

@@ -61,82 +61,122 @@ public class SixBatchImportRunner {
 
     /** Writes one batch in its own transaction. */
     public interface BatchWriter<E> {
-        void write(List<E> batch, Version version, ReglissList list) throws Exception;
+        void write(List<E> batch, Version version, ReglissList list);
     }
 
-    public <D, E> int run(String label, File transformedXml, String recordElement, Class<D> dtoClass,
-                          Function<D, E> mapper, BatchWriter<E> writer,
+    /**
+     * What is imported for one SIX file type: log label, XML record element, DTO class,
+     * DTO -> entity mapper and batch writer. Built by each *FileImportService.
+     */
+    public static final class RecordType<D, E> {
+        private final String label;
+        private final String recordElement;
+        private final Class<D> dtoClass;
+        private final Function<D, E> mapper;
+        private final BatchWriter<E> writer;
+
+        public RecordType(String label, String recordElement, Class<D> dtoClass, Function<D, E> mapper, BatchWriter<E> writer) {
+            this.label = label;
+            this.recordElement = recordElement;
+            this.dtoClass = dtoClass;
+            this.mapper = mapper;
+            this.writer = writer;
+        }
+    }
+
+    /** Everything one run shares between the reading thread and the writer threads. */
+    private static final class RunState<E> {
+        private final SixImportExecutor executor;
+        private final BatchWriter<E> writer;
+        private final Version version;
+        private final ReglissList list;
+        private final long batchExecutionId;
+        private final int totalRecords;
+        private final AtomicInteger persisted = new AtomicInteger();
+        private final AtomicInteger failed = new AtomicInteger();
+        private final AtomicReference<Exception> firstError = new AtomicReference<>();
+
+        private RunState(SixImportExecutor executor, BatchWriter<E> writer, Version version, ReglissList list,
+                         long batchExecutionId, int totalRecords) {
+            this.executor = executor;
+            this.writer = writer;
+            this.version = version;
+            this.list = list;
+            this.batchExecutionId = batchExecutionId;
+            this.totalRecords = totalRecords;
+        }
+    }
+
+    public <D, E> int run(RecordType<D, E> type, File transformedXml,
                           Version version, ReglissList list, long batchExecutionId) throws Exception {
         long start = System.currentTimeMillis();
         SixXmlRecordStream stream = new SixXmlRecordStream(xmlMapper);
 
-        final int totalRecords = stream.count(transformedXml, recordElement);
+        final int totalRecords = stream.count(transformedXml, type.recordElement);
         if (totalRecords == 0) {
             log.warn("[{}] No <{}> records found after transformation - check the XSLT output element name.",
-                    label, recordElement);
+                    type.label, type.recordElement);
             return 0;
         }
-        log.info("[{}] {} records, batches of {}, {} writer threads", label, totalRecords, dbBatchSize, threadPoolSize);
+        log.info("[{}] {} records, batches of {}, {} writer threads", type.label, totalRecords, dbBatchSize, threadPoolSize);
 
-        SixImportExecutor executor = new SixImportExecutor("six-import-" + label, threadPoolSize, requestContext);
-        AtomicInteger persisted = new AtomicInteger();
-        AtomicInteger failed = new AtomicInteger();
-        AtomicReference<Exception> firstError = new AtomicReference<>();
+        RunState<E> state = new RunState<>(new SixImportExecutor("six-import-" + type.label, threadPoolSize, requestContext),
+                type.writer, version, list, batchExecutionId, totalRecords);
         List<E> current = new ArrayList<>(dbBatchSize);
 
         try {
-            stream.forEach(transformedXml, recordElement, dtoClass, dto -> {
+            stream.forEach(transformedXml, type.recordElement, type.dtoClass, dto -> {
                 // FAIL FAST: once a batch has failed, stop reading the file - no new batch is written.
-                if (failOnBatchError && firstError.get() != null) {
+                if (stopAfterError(state)) {
                     throw new StopAfterFailedBatch();
                 }
-                current.add(mapper.apply(dto));
+                current.add(type.mapper.apply(dto));
                 if (current.size() >= dbBatchSize) {
-                    submit(executor, writer, new ArrayList<>(current), version, list, batchExecutionId,
-                            totalRecords, persisted, failed, firstError);
+                    submit(state, new ArrayList<>(current));
                     current.clear();
                 }
             });
-            if (!current.isEmpty() && !(failOnBatchError && firstError.get() != null)) {
-                submit(executor, writer, new ArrayList<>(current), version, list, batchExecutionId,
-                        totalRecords, persisted, failed, firstError);
+            if (!current.isEmpty() && !stopAfterError(state)) {
+                submit(state, new ArrayList<>(current));
             }
         } catch (StopAfterFailedBatch stop) {
-            log.warn("[{}] a batch failed - stopped reading the file, no further batches are written", label);
+            log.warn("[{}] a batch failed - stopped reading the file, no further batches are written", type.label);
         } finally {
-            executor.waitUntilFinished();
+            state.executor.waitUntilFinished();
         }
 
         log.info("[{}] DB write finished in {}s: {} persisted, {} failed (of {})",
-                label, (System.currentTimeMillis() - start) / 1000, persisted.get(), failed.get(), totalRecords);
+                type.label, (System.currentTimeMillis() - start) / 1000, state.persisted.get(), state.failed.get(), totalRecords);
 
-        if (firstError.get() != null && failOnBatchError) {
+        if (stopAfterError(state)) {
             // The caller (AutomaticSixImportXmlService) deletes the rows already committed for this version.
-            throw new ReglissException("SIX " + label + " import failed after " + persisted.get() + " of " + totalRecords
-                    + " records were saved (they will be removed). First error: " + firstError.get().getMessage());
+            throw new ReglissException("SIX " + type.label + " import failed after " + state.persisted.get() + " of " + totalRecords
+                    + " records were saved (they will be removed). First error: " + state.firstError.get().getMessage());
         }
-        return persisted.get();
+        return state.persisted.get();
     }
 
-    private <E> void submit(SixImportExecutor executor, BatchWriter<E> writer, List<E> batch,
-                            Version version, ReglissList list, long batchExecutionId, int totalRecords,
-                            AtomicInteger persisted, AtomicInteger failed, AtomicReference<Exception> firstError) {
-        executor.blockingSubmit(() -> {
+    private boolean stopAfterError(RunState<?> state) {
+        return failOnBatchError && state.firstError.get() != null;
+    }
+
+    private <E> void submit(RunState<E> state, List<E> batch) {
+        state.executor.blockingSubmit(() -> {
             // A batch that was already queued when another batch failed is not written.
-            if (failOnBatchError && firstError.get() != null) {
+            if (stopAfterError(state)) {
                 return;
             }
             try {
-                writer.write(batch, version, list);
-                persisted.addAndGet(batch.size());
-                progressService.incrementImportAutoBatchExecution(batchExecutionId, ImportAutoPhase.IMPORT_AUTO_XML,
-                        list.getImportConfiguration(), batch.size(), totalRecords);
+                state.writer.write(batch, state.version, state.list);
+                state.persisted.addAndGet(batch.size());
+                progressService.incrementImportAutoBatchExecution(state.batchExecutionId, ImportAutoPhase.IMPORT_AUTO_XML,
+                        state.list.getImportConfiguration(), batch.size(), state.totalRecords);
                 // This file is progressing: keep the files of its delivery that wait at 90% from being
                 // reported as stuck (at most once a minute; never fails the import).
-                deliveryService.keepWaitingFilesAlive(batchExecutionId);
+                deliveryService.keepWaitingFilesAlive(state.batchExecutionId);
             } catch (Exception e) {
-                failed.addAndGet(batch.size());
-                firstError.compareAndSet(null, e);
+                state.failed.addAndGet(batch.size());
+                state.firstError.compareAndSet(null, e);
                 log.error("Failed to persist batch of size {}", batch.size(), e);
             }
         });
