@@ -6,7 +6,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.xml.stream.XMLStreamException;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -108,7 +110,8 @@ public class SixBatchImportRunner {
     }
 
     public <D, E> int run(RecordType<D, E> type, File transformedXml,
-                          Version version, ReglissList list, long batchExecutionId) throws Exception {
+                          Version version, ReglissList list, long batchExecutionId)
+            throws IOException, XMLStreamException {
         long start = System.currentTimeMillis();
         SixXmlRecordStream stream = new SixXmlRecordStream(xmlMapper);
 
