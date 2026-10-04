@@ -81,19 +81,15 @@ public class AutomaticSixImportFileRepository {
      * before noticing the source was gone - the ignored file was lost.
      * Now: one atomic rename, a file already moved by another thread is simply skipped, and a real
      * file-system error is logged without stopping the import poller.
-     *
-     * @return true if the file was moved by this call
+     * (void, as before: the only caller, SixImportPoller.processThreeFiles, does not use a result.)
      */
-    public boolean moveToIgnoreDirectoryByFileName(String fileName) {
+    public void moveToIgnoreDirectoryByFileName(String fileName) {
         try {
-            boolean moved = moveIfPresent(fileName, ignoreDirectory);
-            if (moved) {
+            if (moveIfPresent(fileName, ignoreDirectory)) {
                 log.info("SIX file {} moved to the ignore folder (type not in allow.six.file.integration)", fileName);
             }
-            return moved;
         } catch (IOException e) {
             log.error("Could not move SIX file {} to the ignore folder: {}", fileName, e.getMessage());
-            return false;
         }
     }
 
