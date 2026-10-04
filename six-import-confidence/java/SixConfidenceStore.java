@@ -38,6 +38,7 @@ public class SixConfidenceStore {
     private static final String TAKE_OVER_ROW =
             "UPDATE CTR_BATCH_EXPORT SET BATCH_NODE_ID = ? WHERE ID = ? AND BATCH_NODE_ID = ?";
     private static final String DELETE_ROW = "DELETE FROM CTR_BATCH_EXPORT WHERE ID = ?";
+    private static final String NODE_OF_ROW = "SELECT BATCH_NODE_ID FROM CTR_BATCH_EXPORT WHERE ID = ?";
     private static final String JOB_PARAMS = "SELECT JOB_PARAMS FROM CTR_BATCH_JOB_EXECUTION WHERE ID = ?";
 
     /** Same pattern as AutomaticFeedAggregator.SIX_RAW_PATTERN: ..._<date>_<time> */
@@ -70,12 +71,21 @@ public class SixConfidenceStore {
         return result == null ? -1 : result;
     }
 
-    /** Same statement as the old StructureFileRepository / OptionsFileRepository MERGE, built from SixFileKind. */
+    /**
+     * Same statement as the old StructureFileRepository / OptionsFileRepository MERGE, built from SixFileKind,
+     * with a join hint.
+     *
+     * Why the hint: the SIX tables keep every imported version (cleanup is Part 4) and the statistics do not know
+     * the VERSION_ID that was just loaded, so Oracle estimates "1 row" for it and picks a NESTED LOOPS join:
+     * for each of ~40k structure rows it re-reads the ~90k instrument rows of the version - billions of row
+     * visits, the 20-50 minutes seen at 89.99%. LEADING(i) USE_HASH(t) forces the plan that does not depend on
+     * statistics: read the instrument version once into a hash table, then read the target version once.
+     */
     static String mergeSql(SixFileKind target) {
         if (!target.receivesConfidence()) {
             throw new IllegalArgumentException(target + " does not receive a confidence level");
         }
-        return "MERGE INTO " + target.getTable() + " t"
+        return "MERGE /*+ LEADING(i) USE_HASH(t) */ INTO " + target.getTable() + " t"
                 + " USING (SELECT DISTINCT CH_VALOR, CONFIDENCE_LEVEL FROM " + SixFileKind.source().getTable()
                 + "        WHERE VERSION_ID = ?) i"
                 + " ON (i.CH_VALOR = t." + target.getInstrumentLinkColumn() + " AND t.VERSION_ID = ?)"
@@ -90,6 +100,16 @@ public class SixConfidenceStore {
     /** Takes over a row held by a server that is no longer alive (or by this server before a restart). */
     public boolean takeOverRow(long exportRowId, String previousNodeId, String nodeId) {
         return jdbcTemplate.update(TAKE_OVER_ROW, nodeId, exportRowId, previousNodeId) == 1;
+    }
+
+    /**
+     * BATCH_NODE_ID as it is in the database right now (null = not merged / not taken, or row gone).
+     * Read with JDBC on purpose: the BatchExport entity of the same row can come from the JPA cache of the
+     * current thread and still show the value from the start of the poller tick.
+     */
+    public String currentNodeOfRow(long exportRowId) {
+        List<String> nodes = jdbcTemplate.queryForList(NODE_OF_ROW, String.class, exportRowId);
+        return nodes.isEmpty() ? null : nodes.get(0);
     }
 
     public void deleteRow(long exportRowId) {

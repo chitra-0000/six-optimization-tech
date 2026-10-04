@@ -9,6 +9,7 @@ import javax.annotation.PostConstruct;          // jakarta.annotation.PostConstr
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -63,20 +64,62 @@ public class AutomaticSixImportFileRepository {
      * @return true if the file was moved by this call
      */
     public boolean moveToErrorDirectoryIfPresent(String fileName) {
-        File source = fileRepo.getFileByName(inputDirectory, fileName);
-        File target = new File(errorDirectory, source.getName()); // NOSONAR: paths are configured not user input
         try {
-            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            return true;
-        } catch (NoSuchFileException alreadyMoved) {
-            return false;
+            return moveIfPresent(fileName, errorDirectory);
         } catch (IOException e) {
-            throw new ReglissException(e, "Could not move file: " + source.getAbsolutePath() + " to " + errorDirectory.getAbsolutePath());
+            throw new ReglissException(e, "Could not move file: " + fileName + " to " + errorDirectory.getAbsolutePath());
         }
     }
 
-    public void moveToIgnoreDirectoryByFileName(String fileName) {
-        fileRepo.moveFilesToDirectory(fileRepo.getFileByName(inputDirectory, fileName), ignoreDirectory);
+    /**
+     * Moves a SIX file of a type that is not integrated (allow.six.file.integration) to IGNORE.
+     *
+     * The SIX pollers run on several scheduler threads (sched-0..3) and on every server, and each one calls
+     * SixImportPoller.processThreeFiles in the same second. So two threads can try to move the same file:
+     * the second one used to fail ("Could not move file ... FileNotFoundException") and, worse,
+     * FileRepository.moveFilesToDirectory first DELETED the copy already in IGNORE ("Overwriting file")
+     * before noticing the source was gone - the ignored file was lost.
+     * Now: one atomic rename, a file already moved by another thread is simply skipped, and a real
+     * file-system error is logged without stopping the import poller.
+     *
+     * @return true if the file was moved by this call
+     */
+    public boolean moveToIgnoreDirectoryByFileName(String fileName) {
+        try {
+            boolean moved = moveIfPresent(fileName, ignoreDirectory);
+            if (moved) {
+                log.info("SIX file {} moved to the ignore folder (type not in allow.six.file.integration)", fileName);
+            }
+            return moved;
+        } catch (IOException e) {
+            log.error("Could not move SIX file {} to the ignore folder: {}", fileName, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * One atomic rename IN -> target folder. Never deletes anything in the target folder first; a file that
+     * is no longer in IN (moved by another thread or server) returns false.
+     */
+    private boolean moveIfPresent(String fileName, File targetDirectory) throws IOException {
+        File source = fileRepo.getFileByName(inputDirectory, fileName);
+        File target = new File(targetDirectory, source.getName()); // NOSONAR: paths are configured not user input
+        try {
+            // ATOMIC_MOVE = a single rename(): it replaces a same-named file in the target folder in one step
+            // and fails with NoSuchFileException if another thread already moved the source.
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            return true;
+        } catch (NoSuchFileException alreadyMoved) {
+            return false;
+        } catch (AtomicMoveNotSupportedException differentFileSystem) {
+            // only if the target folder is on another mount: copy + delete (no longer atomic, still safe if the source is gone)
+            try {
+                Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                return true;
+            } catch (NoSuchFileException alreadyMoved) {
+                return false;
+            }
+        }
     }
 
     public void moveToErrorDirectory(AutomaticImportFeedBase feed) {

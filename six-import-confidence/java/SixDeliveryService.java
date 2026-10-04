@@ -346,7 +346,7 @@ public class SixDeliveryService {
             WaitingRow row = new WaitingRow();
             row.exportId = export.getId();
             row.jobId = ids.get(0);
-            row.batchNodeId = export.getBatchNodeId();
+            row.batchNodeId = store.currentNodeOfRow(export.getId());   // fresh value, not the JPA-cached entity
             row.launcher = export.getExportParams().getLauncherUsername();
             row.version = export.getExportParams().getVersionOpt().orElse(null);
             row.versionId = row.version == null ? null : row.version.getId();
