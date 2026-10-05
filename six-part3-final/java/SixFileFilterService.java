@@ -56,11 +56,8 @@ public class SixFileFilterService {
     private static final String AND = " AND ";
     private static final String MANDATORY_SELECT = " WHERE i.LIST_ID = :listId AND i.VERSION_ID = :versionId";
 
-    // Column aliases
-    private static final String ALIAS_I = "i";
-    private static final String ALIAS_T = "t";
-
     // Column lists: unchanged (the extractors read these aliases)
+    @SuppressWarnings("java:S1192")
     private static final String INSTR_COLUMNS =
             "    i.ID                              AS i_id, " +
             "    i.LIST_ID                         AS i_list_id, " +
@@ -130,6 +127,7 @@ public class SixFileFilterService {
             "    t.REASON_FOR_CHANGE               AS t_reason_for_change, " +
             "    t.SANCTIONS_RATIONALE             AS t_sanctions_rationale ";
 
+    @SuppressWarnings("java:S1192")
     private static final String STRUCT_COLUMNS =
             "    i.ID                              AS i_id, " +
             "    i.LIST_ID                         AS i_list_id, " +
@@ -191,6 +189,7 @@ public class SixFileFilterService {
             "    t.REASON_FOR_CHANGE               AS t_reason_for_change, " +
             "    t.SANCTIONS_RATIONALE             AS t_sanctions_rationale ";
 
+    @SuppressWarnings("java:S1192")
     private static final String OPTION_COLUMNS =
             "    i.ID                              AS i_id, " +
             "    i.LIST_ID                         AS i_list_id, " +

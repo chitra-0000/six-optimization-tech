@@ -111,31 +111,53 @@ public class SixExportException extends RuntimeException {
             return ERR_DATABASE_NOT_REACHABLE;
         }
         for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            String message = t.getMessage() == null ? "" : t.getMessage();
-            if (message.startsWith("SIX filter")) {
-                return ERR_INVALID_FILTER;
+            String result = checkMessageBasedError(t);
+            if (result != null) {
+                return result;
             }
-            if (message.contains("Duplicate external reference")) {
-                return ERR_DUPLICATE_REFERENCE;
-            }
-            if (message.startsWith("No active output list")) {
-                return ERR_NO_ACTIVE_LIST;
-            }
-            if (t instanceof SAXException) {
-                return ERR_XML_NOT_VALID;
-            }
-            if (t instanceof IOException || t instanceof UncheckedIOException) {
-                return ERR_FILE_NOT_WRITTEN;
-            }
-            if (t instanceof NumberFormatException || t instanceof DateTimeParseException) {
-                return ERR_INVALID_DATA;
-            }
-            if (t instanceof SQLException || message.contains("ORA-") || t.getClass().getName().startsWith("org.springframework.dao.")
-                    || t.getClass().getName().startsWith("org.springframework.jdbc.")) {
-                return ERR_DATABASE_ERROR;
+            result = checkExceptionTypeError(t);
+            if (result != null) {
+                return result;
             }
         }
         return ERR_UNEXPECTED;
+    }
+
+    private static String checkMessageBasedError(Throwable t) {
+        String message = t.getMessage() == null ? "" : t.getMessage();
+        if (message.startsWith("SIX filter")) {
+            return ERR_INVALID_FILTER;
+        }
+        if (message.contains("Duplicate external reference")) {
+            return ERR_DUPLICATE_REFERENCE;
+        }
+        if (message.startsWith("No active output list")) {
+            return ERR_NO_ACTIVE_LIST;
+        }
+        return null;
+    }
+
+    private static String checkExceptionTypeError(Throwable t) {
+        if (t instanceof SAXException) {
+            return ERR_XML_NOT_VALID;
+        }
+        if (t instanceof IOException || t instanceof UncheckedIOException) {
+            return ERR_FILE_NOT_WRITTEN;
+        }
+        if (t instanceof NumberFormatException || t instanceof DateTimeParseException) {
+            return ERR_INVALID_DATA;
+        }
+        if (isDatabaseError(t)) {
+            return ERR_DATABASE_ERROR;
+        }
+        return null;
+    }
+
+    private static boolean isDatabaseError(Throwable t) {
+        String message = t.getMessage() == null ? "" : t.getMessage();
+        return t instanceof SQLException || message.contains("ORA-")
+                || t.getClass().getName().startsWith("org.springframework.dao.")
+                || t.getClass().getName().startsWith("org.springframework.jdbc.");
     }
 
     /** Database not reachable (connection lost / refused, pool exhausted): no list can be processed. */

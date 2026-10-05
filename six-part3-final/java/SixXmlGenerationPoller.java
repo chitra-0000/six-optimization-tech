@@ -322,20 +322,43 @@ public class SixXmlGenerationPoller {
      */
     private void removeDuplicatedIsinBasedOnSanctioned(List<FilteredInstrumentFile> filteredInstru,
                                                        List<FilteredStructuredFile> filteredStructured) {
-        Map<String, String> instrumentISINWithSanctionedDetail = filteredInstru.stream()
+        Map<String, String> instrumentISINWithSanctionedDetail = buildInstrumentISINMap(filteredInstru);
+        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = buildStructuredByHostIsinMap(filteredStructured);
+
+        Map<FilteredStructuredFile, String> sanctionedText = new IdentityHashMap<>();
+        Function<FilteredStructuredFile, String> sanctionedOf = sf -> sanctionedText.computeIfAbsent(sf,
+                k -> k.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).collect(Collectors.joining(" - ")).toUpperCase());
+
+        RemovalResult removalResult = computeRemovals(instrumentISINWithSanctionedDetail, structuredByHostIsin, sanctionedOf);
+
+        if (!removalResult.removedStructured.isEmpty()) {
+            filteredStructured.removeIf(removalResult.removedStructured::contains);
+        }
+        if (!removalResult.removedInstrumentIsins.isEmpty()) {
+            filteredInstru.removeIf(i -> removalResult.removedInstrumentIsins.contains(i.getIsin()));
+        }
+    }
+
+    private Map<String, String> buildInstrumentISINMap(List<FilteredInstrumentFile> filteredInstru) {
+        return filteredInstru.stream()
                 .filter(i -> i.getIsin() != null)
                 .collect(Collectors.toMap(
                         FilteredInstrumentFile::getIsin,
                         i -> i.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).distinct()
                                 .collect(Collectors.joining(" - "))));
+    }
 
-        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = new HashMap<>();
+    private Map<String, List<FilteredStructuredFile>> buildStructuredByHostIsinMap(List<FilteredStructuredFile> filteredStructured) {
+        Map<String, List<FilteredStructuredFile>> map = new HashMap<>();
         for (FilteredStructuredFile sf : filteredStructured) {
-            structuredByHostIsin.computeIfAbsent(sf.getHostIsin(), k -> new ArrayList<>()).add(sf);
+            map.computeIfAbsent(sf.getHostIsin(), k -> new ArrayList<>()).add(sf);
         }
-        Map<FilteredStructuredFile, String> sanctionedText = new IdentityHashMap<>();
-        Function<FilteredStructuredFile, String> sanctionedOf = sf -> sanctionedText.computeIfAbsent(sf,
-                k -> k.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).collect(Collectors.joining(" - ")).toUpperCase());
+        return map;
+    }
+
+    private RemovalResult computeRemovals(Map<String, String> instrumentISINWithSanctionedDetail,
+                                         Map<String, List<FilteredStructuredFile>> structuredByHostIsin,
+                                         Function<FilteredStructuredFile, String> sanctionedOf) {
         Set<FilteredStructuredFile> removedStructured = Collections.newSetFromMap(new IdentityHashMap<>());
         Set<String> removedInstrumentIsins = new HashSet<>();
 
@@ -343,24 +366,37 @@ public class SixXmlGenerationPoller {
             if (instrumentISIN.getValue().toUpperCase().contains("YES")) {
                 removedStructured.addAll(structuredByHostIsin.getOrDefault(instrumentISIN.getKey(), Collections.emptyList()));
             } else {
-                List<FilteredStructuredFile> sameHost = structuredByHostIsin.getOrDefault(instrumentISIN.getValue(), Collections.emptyList());
-                for (FilteredStructuredFile sf : sameHost) {
-                    if (!removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("NO")) {
-                        removedStructured.add(sf);
-                    }
-                }
-                boolean sanctionedStructLeft = sameHost.stream()
-                        .anyMatch(sf -> !removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("YES"));
-                if (sanctionedStructLeft) {
-                    removedInstrumentIsins.add(instrumentISIN.getKey());
-                }
+                processStructuredProductsForIsin(instrumentISIN, structuredByHostIsin, sanctionedOf, removedStructured, removedInstrumentIsins);
             }
         }
-        if (!removedStructured.isEmpty()) {
-            filteredStructured.removeIf(removedStructured::contains);
+        return new RemovalResult(removedStructured, removedInstrumentIsins);
+    }
+
+    private void processStructuredProductsForIsin(Map.Entry<String, String> instrumentISIN,
+                                                 Map<String, List<FilteredStructuredFile>> structuredByHostIsin,
+                                                 Function<FilteredStructuredFile, String> sanctionedOf,
+                                                 Set<FilteredStructuredFile> removedStructured,
+                                                 Set<String> removedInstrumentIsins) {
+        List<FilteredStructuredFile> sameHost = structuredByHostIsin.getOrDefault(instrumentISIN.getValue(), Collections.emptyList());
+        for (FilteredStructuredFile sf : sameHost) {
+            if (!removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("NO")) {
+                removedStructured.add(sf);
+            }
         }
-        if (!removedInstrumentIsins.isEmpty()) {
-            filteredInstru.removeIf(i -> removedInstrumentIsins.contains(i.getIsin()));
+        boolean sanctionedStructLeft = sameHost.stream()
+                .anyMatch(sf -> !removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("YES"));
+        if (sanctionedStructLeft) {
+            removedInstrumentIsins.add(instrumentISIN.getKey());
+        }
+    }
+
+    private static class RemovalResult {
+        final Set<FilteredStructuredFile> removedStructured;
+        final Set<String> removedInstrumentIsins;
+
+        RemovalResult(Set<FilteredStructuredFile> removedStructured, Set<String> removedInstrumentIsins) {
+            this.removedStructured = removedStructured;
+            this.removedInstrumentIsins = removedInstrumentIsins;
         }
     }
 
