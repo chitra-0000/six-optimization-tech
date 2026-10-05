@@ -1,6 +1,9 @@
 DECLARE
     v_seq_exists   NUMBER;
     v_table_exists NUMBER;
+    v_index_exists1 NUMBER;
+    v_index_exists2 NUMBER;
+    v_index_exists3 NUMBER;
 BEGIN
     SELECT COUNT(*) INTO v_seq_exists
       FROM user_sequences
@@ -50,6 +53,30 @@ BEGIN
                 REFERENCES FILTERED_SIX_OPTION (ID)
                 ON DELETE CASCADE
             )';
+    END IF;
+
+ SELECT COUNT(*) INTO v_index_exists1
+               FROM USER_INDEXES
+              WHERE UPPER(INDEX_NAME) = 'IDX_FT_SIX_INSTR_ID';
+          IF v_index_exists1 = 0 THEN
+              EXECUTE IMMEDIATE
+              'CREATE INDEX IDX_FT_SIX_INSTR_ID ON FILTERED_SIX_TARGET (SIX_INSTRU_ID)';
+    END IF;
+
+    SELECT COUNT(*) INTO v_index_exists2
+               FROM USER_INDEXES
+              WHERE UPPER(INDEX_NAME) = 'IDX_FT_SIX_STRUCT_ID';
+          IF v_index_exists2 = 0 THEN
+              EXECUTE IMMEDIATE
+              'CREATE INDEX IDX_FT_SIX_STRUCT_ID ON FILTERED_SIX_TARGET (SIX_STRUCT_ID)';
+    END IF;
+
+    SELECT COUNT(*) INTO v_index_exists3
+               FROM USER_INDEXES
+              WHERE UPPER(INDEX_NAME) = 'IDX_FT_SIX_OPT_ID';
+          IF v_index_exists3 = 0 THEN
+              EXECUTE IMMEDIATE
+              'CREATE INDEX IDX_FT_SIX_OPT_ID ON FILTERED_SIX_TARGET (SIX_OPT_ID)';
     END IF;
 END;
 /
