@@ -28,18 +28,7 @@ BEGIN
                             FIELD_NAME                VARCHAR2(255),
                             CONSTRAINT PK_SIX_FIELD_TYPE_FILTER   PRIMARY KEY (ID)
             )';
-    END IF;
+    END IF;  
    
-    EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM SIX_FIELD_TYPE_FILTER' INTO v_rows;
-
-    IF v_rows = 0 THEN
-        EXECUTE IMMEDIATE 'INSERT INTO SIX_FIELD_TYPE_FILTER (FILTER_TYPE, FIELD_NAME) VALUES (:1, :2)'
-            USING 'Data extractor 1', 'CONFIDENCE_LEVEL';
-        EXECUTE IMMEDIATE 'INSERT INTO SIX_FIELD_TYPE_FILTER (FILTER_TYPE, FIELD_NAME) VALUES (:1, :2)'
-            USING 'Data extractor 2', 'ISIN';
-        EXECUTE IMMEDIATE 'INSERT INTO SIX_FIELD_TYPE_FILTER (FILTER_TYPE, FIELD_NAME) VALUES (:1, :2)'
-            USING 'Data extractor 2', 'ACTIVE_FLAG';
-        COMMIT;
-    END IF;
 END;
 /
