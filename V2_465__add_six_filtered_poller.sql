@@ -25,9 +25,7 @@ BEGIN
                          RAW_LIST_ID                NUMBER(10),
                          RAW_VERSION_ID             NUMBER(15),
                          SIX_LIST_REFERENCE         NUMBER(15),
-                         BATCH_JOB_EXECUTION_ID     NUMBER(15),
-                         STATUS                     VARCHAR2(20 CHAR),
-                         UPDATED_TIME               TIMESTAMP(6),
+                         BATCH_JOB_EXECUTION_ID     NUMBER(15),                       
                          CONSTRAINT PK_SIX_FILTERED_POLLER   PRIMARY KEY (ID)
 
         )';
