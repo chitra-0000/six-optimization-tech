@@ -21,17 +21,59 @@ import java.util.Optional;
  */
 public enum SixFileKind {
 
-    INSTRUMENT(ImportFileType.SIX_INSTRUMENTS_FILE, "INSTR", "SIX_INSTRUMENTS", null,
-            "Instrument File", "INSTR", "i.isin", "SIX_INSTRU_ID",
-            "FILTERED_SIX_INSTRUMENTS", "IDX_SIX_INSTRUMENT_VERSION", "IDX_SIX_TARGET_INSTR_ID"),
+    INSTRUMENT(ImportFileType.SIX_INSTRUMENTS_FILE, MARKER_INSTR, TABLE_SIX_INSTRUMENTS, null,
+            FILE_TYPE_INSTRUMENT, POLLER_TYPE_INSTR, ISIN_INSTR, FK_INSTR,
+            TABLE_FILTERED_INSTRUMENTS, INDEX_INSTRUMENT_VERSION, INDEX_TARGET_INSTR),
 
-    STRUCTURED(ImportFileType.SIX_STRUCTURED_FILE, "STRUCT", "SIX_STRUCTURED", "UNDERLYING_CH",
-            "Structured File", "STRUCT", "i.host_isin", "SIX_STRUCT_ID",
-            "FILTERED_SIX_STRUCTURED", "IDX_SIX_STRUCTURE_VERSION", "IDX_SIX_TARGET_STRUCT_ID"),
+    STRUCTURED(ImportFileType.SIX_STRUCTURED_FILE, MARKER_STRUCT, TABLE_SIX_STRUCTURED, COL_UNDERLYING_CH,
+            FILE_TYPE_STRUCTURED, POLLER_TYPE_STRUCT, ISIN_STRUCT, FK_STRUCT,
+            TABLE_FILTERED_STRUCTURED, INDEX_STRUCTURE_VERSION, INDEX_TARGET_STRUCT),
 
-    OPTIONS(ImportFileType.SIX_OPTIONS_FILE, "OPT", "SIX_OPTION", "UNDERLYING_CH",
-            "Options File", "OPTIONS", "i.isin_option", "SIX_OPT_ID",
-            "FILTERED_SIX_OPTION", "IDX_SIX_OPT_VERSION", "IDX_SIX_TARGET_OPT_ID");
+    OPTIONS(ImportFileType.SIX_OPTIONS_FILE, MARKER_OPT, TABLE_SIX_OPTION, COL_UNDERLYING_CH,
+            FILE_TYPE_OPTIONS, POLLER_TYPE_OPTIONS, ISIN_OPTIONS, FK_OPTIONS,
+            TABLE_FILTERED_OPTIONS, INDEX_OPT_VERSION, INDEX_TARGET_OPT);
+
+    // File name markers
+    private static final String MARKER_INSTR = "INSTR";
+    private static final String MARKER_STRUCT = "STRUCT";
+    private static final String MARKER_OPT = "OPT";
+
+    // Raw table names
+    private static final String TABLE_SIX_INSTRUMENTS = "SIX_INSTRUMENTS";
+    private static final String TABLE_SIX_STRUCTURED = "SIX_STRUCTURED";
+    private static final String TABLE_SIX_OPTION = "SIX_OPTION";
+    private static final String COL_UNDERLYING_CH = "UNDERLYING_CH";
+
+    // Filter and poller file types
+    private static final String FILE_TYPE_INSTRUMENT = "Instrument File";
+    private static final String FILE_TYPE_STRUCTURED = "Structured File";
+    private static final String FILE_TYPE_OPTIONS = "Options File";
+    private static final String POLLER_TYPE_INSTR = "INSTR";
+    private static final String POLLER_TYPE_STRUCT = "STRUCT";
+    private static final String POLLER_TYPE_OPTIONS = "OPTIONS";
+
+    // ISIN columns
+    private static final String ISIN_INSTR = "i.isin";
+    private static final String ISIN_STRUCT = "i.host_isin";
+    private static final String ISIN_OPTIONS = "i.isin_option";
+
+    // Foreign key columns
+    private static final String FK_INSTR = "SIX_INSTRU_ID";
+    private static final String FK_STRUCT = "SIX_STRUCT_ID";
+    private static final String FK_OPTIONS = "SIX_OPT_ID";
+
+    // Filtered tables
+    private static final String TABLE_FILTERED_INSTRUMENTS = "FILTERED_SIX_INSTRUMENTS";
+    private static final String TABLE_FILTERED_STRUCTURED = "FILTERED_SIX_STRUCTURED";
+    private static final String TABLE_FILTERED_OPTIONS = "FILTERED_SIX_OPTION";
+
+    // Index names
+    private static final String INDEX_INSTRUMENT_VERSION = "IDX_SIX_INSTRUMENT_VERSION";
+    private static final String INDEX_STRUCTURE_VERSION = "IDX_SIX_STRUCTURE_VERSION";
+    private static final String INDEX_OPT_VERSION = "IDX_SIX_OPT_VERSION";
+    private static final String INDEX_TARGET_INSTR = "IDX_SIX_TARGET_INSTR_ID";
+    private static final String INDEX_TARGET_STRUCT = "IDX_SIX_TARGET_STRUCT_ID";
+    private static final String INDEX_TARGET_OPT = "IDX_SIX_TARGET_OPT_ID";
 
     private final ImportFileType importFileType;
     private final String fileNameMarker;

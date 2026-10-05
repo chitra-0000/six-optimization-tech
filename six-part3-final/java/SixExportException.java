@@ -22,18 +22,29 @@ import java.time.format.DateTimeParseException;
 public class SixExportException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
+    private static final String STEP_WRITING_FILTERED = "writing the filtered data";
+    private static final String STEP_GENERATING_XML = "generating the XML file";
+    private static final String ERR_DATABASE_NOT_REACHABLE = "database not reachable";
+    private static final String ERR_INVALID_FILTER = "invalid filter definition";
+    private static final String ERR_DUPLICATE_REFERENCE = "duplicated external reference in the filtered data";
+    private static final String ERR_NO_ACTIVE_LIST = "no active output list";
+    private static final String ERR_XML_NOT_VALID = "XML file not valid against the schema";
+    private static final String ERR_FILE_NOT_WRITTEN = "file could not be written to the DJ IN folder";
+    private static final String ERR_INVALID_DATA = "invalid data in the SIX file";
+    private static final String ERR_DATABASE_ERROR = "database error";
+    private static final String ERR_UNEXPECTED = "unexpected technical error";
 
     /** Where the export stopped: technical text (log) and business step (mail). */
     public enum Stage {
         PREPARE("while preparing the export (output lists, filters, CMIC / E014071 exclusions)", "preparation of the export"),
         FILTER("while applying the filters of the list (SQL on the raw SIX tables)", "filtering"),
-        DELETE_PREVIOUS("while deleting the previous filtered rows of the list (FILTERED_SIX_*)", "writing the filtered data"),
-        WRITE("while inserting the filtered rows into FILTERED_SIX_*", "writing the filtered data"),
-        ANNOUNCE("while marking the list as filtered (SIX_FILTERED_POLLER)", "writing the filtered data"),
-        READ_FILTERED("while reading the filtered rows of the list (FILTERED_SIX_*)", "generating the XML file"),
-        GENERIC_RULES("while applying the generic rules (duplicated ISIN / sanctions)", "generating the XML file"),
-        BUILD_XML("while building the XML records of the list (ListTypeBuilder)", "generating the XML file"),
-        WRITE_FILE("while creating the CONVERTER file (file name, XML, XSD validation, move to the DJ IN folder)", "generating the XML file");
+        DELETE_PREVIOUS("while deleting the previous filtered rows of the list (FILTERED_SIX_*)", STEP_WRITING_FILTERED),
+        WRITE("while inserting the filtered rows into FILTERED_SIX_*", STEP_WRITING_FILTERED),
+        ANNOUNCE("while marking the list as filtered (SIX_FILTERED_POLLER)", STEP_WRITING_FILTERED),
+        READ_FILTERED("while reading the filtered rows of the list (FILTERED_SIX_*)", STEP_GENERATING_XML),
+        GENERIC_RULES("while applying the generic rules (duplicated ISIN / sanctions)", STEP_GENERATING_XML),
+        BUILD_XML("while building the XML records of the list (ListTypeBuilder)", STEP_GENERATING_XML),
+        WRITE_FILE("while creating the CONVERTER file (file name, XML, XSD validation, move to the DJ IN folder)", STEP_GENERATING_XML);
 
         private final String logText;
         private final String step;
@@ -97,34 +108,34 @@ public class SixExportException extends RuntimeException {
     /** Business-level reason of a technical error (for the mail). */
     public static String reason(Throwable error) {
         if (isConnectionError(error)) {
-            return "database not reachable";
+            return ERR_DATABASE_NOT_REACHABLE;
         }
         for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
             String message = t.getMessage() == null ? "" : t.getMessage();
             if (message.startsWith("SIX filter")) {
-                return "invalid filter definition";
+                return ERR_INVALID_FILTER;
             }
             if (message.contains("Duplicate external reference")) {
-                return "duplicated external reference in the filtered data";
+                return ERR_DUPLICATE_REFERENCE;
             }
             if (message.startsWith("No active output list")) {
-                return "no active output list";
+                return ERR_NO_ACTIVE_LIST;
             }
             if (t instanceof SAXException) {
-                return "XML file not valid against the schema";
+                return ERR_XML_NOT_VALID;
             }
             if (t instanceof IOException || t instanceof UncheckedIOException) {
-                return "file could not be written to the DJ IN folder";
+                return ERR_FILE_NOT_WRITTEN;
             }
             if (t instanceof NumberFormatException || t instanceof DateTimeParseException) {
-                return "invalid data in the SIX file";
+                return ERR_INVALID_DATA;
             }
             if (t instanceof SQLException || message.contains("ORA-") || t.getClass().getName().startsWith("org.springframework.dao.")
                     || t.getClass().getName().startsWith("org.springframework.jdbc.")) {
-                return "database error";
+                return ERR_DATABASE_ERROR;
             }
         }
-        return "unexpected technical error";
+        return ERR_UNEXPECTED;
     }
 
     /** Database not reachable (connection lost / refused, pool exhausted): no list can be processed. */

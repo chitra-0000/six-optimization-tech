@@ -56,6 +56,10 @@ public class SixFileFilterService {
     private static final String AND = " AND ";
     private static final String MANDATORY_SELECT = " WHERE i.LIST_ID = :listId AND i.VERSION_ID = :versionId";
 
+    // Column aliases
+    private static final String ALIAS_I = "i";
+    private static final String ALIAS_T = "t";
+
     // Column lists: unchanged (the extractors read these aliases)
     private static final String INSTR_COLUMNS =
             "    i.ID                              AS i_id, " +

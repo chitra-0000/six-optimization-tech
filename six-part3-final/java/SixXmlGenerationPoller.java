@@ -60,6 +60,11 @@ public class SixXmlGenerationPoller {
 
     /** The UI shows a job without end date as KO when it was not updated for 30 minutes. */
     private static final long KO_AFTER_MINUTES = 30;
+    private static final String LOG_PREFIX_XML = "SIX XML step: ";
+    private static final String LOG_LIST = "list ";
+    private static final String LOG_CONVERTER_FILE = "CONVERTER file of list ";
+    private static final String LOG_DELIVERY = ", delivery ";
+    private static final String LOG_JOBS = ", jobs ";
 
     DateTimeFormatter inputFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
     DateTimeFormatter outputFormatter = DateTimeFormatter.ISO_LOCAL_DATE;
@@ -104,7 +109,7 @@ public class SixXmlGenerationPoller {
                 generateXmlFile(childList, required);
             } catch (RuntimeException e) {
                 // an error OUTSIDE the stages (reading SIX_FILTERED_POLLER ...): logged, next list, next minute
-                log.error("SIX XML step: list {} not processed in this run: {}", childList.getReference(),
+                log.error(LOG_PREFIX_XML + LOG_LIST + "{} not processed in this run: {}", childList.getReference(),
                         SixExportException.rootCause(e), e);
             }
         }
@@ -121,9 +126,9 @@ public class SixXmlGenerationPoller {
         }
         List<Long> rowIds = claim.getRows().stream().map(SixFilteredStore.PollerRow::getId).collect(Collectors.toList());
         Set<Long> batchJobExecutionIds = claim.jobIds();
-        String where = "CONVERTER file of list " + reference + " (" + claim + ", delivery "
+        String where = LOG_CONVERTER_FILE + reference + " (" + claim + LOG_DELIVERY
                 + claim.getRows().stream().map(r -> sixExportRunGuard.deliveryOf(r.getRawVersionId())).distinct()
-                .collect(Collectors.joining(", ")) + ", jobs " + batchJobExecutionIds + ")";
+                .collect(Collectors.joining(", ")) + LOG_JOBS + batchJobExecutionIds + ")";
 
         // the list may have failed on a server between the drop above and the claim (a complete list is still
         // built when only the delivery was stopped)
@@ -131,7 +136,7 @@ public class SixXmlGenerationPoller {
                 .filter(f -> !SixExportRunGuard.FAILED_ALL.equals(f.getStatus()));
         if (stop.isPresent()) {
             sixFilteredStore.markBuildFailed(rowIds);
-            log.error("SIX XML step: {} not generated because {}", where, sixExportRunGuard.describe(stop.get()));
+            log.error(LOG_PREFIX_XML + "{} not generated because {}", where, sixExportRunGuard.describe(stop.get()));
             return;
         }
 
