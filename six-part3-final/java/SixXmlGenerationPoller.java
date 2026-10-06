@@ -60,11 +60,6 @@ public class SixXmlGenerationPoller {
 
     /** The UI shows a job without end date as KO when it was not updated for 30 minutes. */
     private static final long KO_AFTER_MINUTES = 30;
-    private static final String LOG_PREFIX_XML = "SIX XML step: ";
-    private static final String LOG_LIST = "list ";
-    private static final String LOG_CONVERTER_FILE = "CONVERTER file of list ";
-    private static final String LOG_DELIVERY = ", delivery ";
-    private static final String LOG_JOBS = ", jobs ";
 
     DateTimeFormatter inputFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
     DateTimeFormatter outputFormatter = DateTimeFormatter.ISO_LOCAL_DATE;
@@ -109,7 +104,7 @@ public class SixXmlGenerationPoller {
                 generateXmlFile(childList, required);
             } catch (RuntimeException e) {
                 // an error OUTSIDE the stages (reading SIX_FILTERED_POLLER ...): logged, next list, next minute
-                log.error(LOG_PREFIX_XML + LOG_LIST + "{} not processed in this run: {}", childList.getReference(),
+                log.error("SIX XML step: list {} not processed in this run: {}", childList.getReference(),
                         SixExportException.rootCause(e), e);
             }
         }
@@ -126,9 +121,9 @@ public class SixXmlGenerationPoller {
         }
         List<Long> rowIds = claim.getRows().stream().map(SixFilteredStore.PollerRow::getId).collect(Collectors.toList());
         Set<Long> batchJobExecutionIds = claim.jobIds();
-        String where = LOG_CONVERTER_FILE + reference + " (" + claim + LOG_DELIVERY
+        String where = "CONVERTER file of list " + reference + " (" + claim + ", delivery "
                 + claim.getRows().stream().map(r -> sixExportRunGuard.deliveryOf(r.getRawVersionId())).distinct()
-                .collect(Collectors.joining(", ")) + LOG_JOBS + batchJobExecutionIds + ")";
+                .collect(Collectors.joining(", ")) + ", jobs " + batchJobExecutionIds + ")";
 
         // the list may have failed on a server between the drop above and the claim (a complete list is still
         // built when only the delivery was stopped)
@@ -136,7 +131,7 @@ public class SixXmlGenerationPoller {
                 .filter(f -> !SixExportRunGuard.FAILED_ALL.equals(f.getStatus()));
         if (stop.isPresent()) {
             sixFilteredStore.markBuildFailed(rowIds);
-            log.error(LOG_PREFIX_XML + "{} not generated because {}", where, sixExportRunGuard.describe(stop.get()));
+            log.error("SIX XML step: {} not generated because {}", where, sixExportRunGuard.describe(stop.get()));
             return;
         }
 
@@ -322,43 +317,20 @@ public class SixXmlGenerationPoller {
      */
     private void removeDuplicatedIsinBasedOnSanctioned(List<FilteredInstrumentFile> filteredInstru,
                                                        List<FilteredStructuredFile> filteredStructured) {
-        Map<String, String> instrumentISINWithSanctionedDetail = buildInstrumentISINMap(filteredInstru);
-        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = buildStructuredByHostIsinMap(filteredStructured);
-
-        Map<FilteredStructuredFile, String> sanctionedText = new IdentityHashMap<>();
-        Function<FilteredStructuredFile, String> sanctionedOf = sf -> sanctionedText.computeIfAbsent(sf,
-                k -> k.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).collect(Collectors.joining(" - ")).toUpperCase());
-
-        RemovalResult removalResult = computeRemovals(instrumentISINWithSanctionedDetail, structuredByHostIsin, sanctionedOf);
-
-        if (!removalResult.removedStructured.isEmpty()) {
-            filteredStructured.removeIf(removalResult.removedStructured::contains);
-        }
-        if (!removalResult.removedInstrumentIsins.isEmpty()) {
-            filteredInstru.removeIf(i -> removalResult.removedInstrumentIsins.contains(i.getIsin()));
-        }
-    }
-
-    private Map<String, String> buildInstrumentISINMap(List<FilteredInstrumentFile> filteredInstru) {
-        return filteredInstru.stream()
+        Map<String, String> instrumentISINWithSanctionedDetail = filteredInstru.stream()
                 .filter(i -> i.getIsin() != null)
                 .collect(Collectors.toMap(
                         FilteredInstrumentFile::getIsin,
                         i -> i.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).distinct()
                                 .collect(Collectors.joining(" - "))));
-    }
 
-    private Map<String, List<FilteredStructuredFile>> buildStructuredByHostIsinMap(List<FilteredStructuredFile> filteredStructured) {
-        Map<String, List<FilteredStructuredFile>> map = new HashMap<>();
+        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = new HashMap<>();
         for (FilteredStructuredFile sf : filteredStructured) {
-            map.computeIfAbsent(sf.getHostIsin(), k -> new ArrayList<>()).add(sf);
+            structuredByHostIsin.computeIfAbsent(sf.getHostIsin(), k -> new ArrayList<>()).add(sf);
         }
-        return map;
-    }
-
-    private RemovalResult computeRemovals(Map<String, String> instrumentISINWithSanctionedDetail,
-                                         Map<String, List<FilteredStructuredFile>> structuredByHostIsin,
-                                         Function<FilteredStructuredFile, String> sanctionedOf) {
+        Map<FilteredStructuredFile, String> sanctionedText = new IdentityHashMap<>();
+        Function<FilteredStructuredFile, String> sanctionedOf = sf -> sanctionedText.computeIfAbsent(sf,
+                k -> k.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).collect(Collectors.joining(" - ")).toUpperCase());
         Set<FilteredStructuredFile> removedStructured = Collections.newSetFromMap(new IdentityHashMap<>());
         Set<String> removedInstrumentIsins = new HashSet<>();
 
@@ -366,37 +338,24 @@ public class SixXmlGenerationPoller {
             if (instrumentISIN.getValue().toUpperCase().contains("YES")) {
                 removedStructured.addAll(structuredByHostIsin.getOrDefault(instrumentISIN.getKey(), Collections.emptyList()));
             } else {
-                processStructuredProductsForIsin(instrumentISIN, structuredByHostIsin, sanctionedOf, removedStructured, removedInstrumentIsins);
+                List<FilteredStructuredFile> sameHost = structuredByHostIsin.getOrDefault(instrumentISIN.getValue(), Collections.emptyList());
+                for (FilteredStructuredFile sf : sameHost) {
+                    if (!removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("NO")) {
+                        removedStructured.add(sf);
+                    }
+                }
+                boolean sanctionedStructLeft = sameHost.stream()
+                        .anyMatch(sf -> !removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("YES"));
+                if (sanctionedStructLeft) {
+                    removedInstrumentIsins.add(instrumentISIN.getKey());
+                }
             }
         }
-        return new RemovalResult(removedStructured, removedInstrumentIsins);
-    }
-
-    private void processStructuredProductsForIsin(Map.Entry<String, String> instrumentISIN,
-                                                 Map<String, List<FilteredStructuredFile>> structuredByHostIsin,
-                                                 Function<FilteredStructuredFile, String> sanctionedOf,
-                                                 Set<FilteredStructuredFile> removedStructured,
-                                                 Set<String> removedInstrumentIsins) {
-        List<FilteredStructuredFile> sameHost = structuredByHostIsin.getOrDefault(instrumentISIN.getValue(), Collections.emptyList());
-        for (FilteredStructuredFile sf : sameHost) {
-            if (!removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("NO")) {
-                removedStructured.add(sf);
-            }
+        if (!removedStructured.isEmpty()) {
+            filteredStructured.removeIf(removedStructured::contains);
         }
-        boolean sanctionedStructLeft = sameHost.stream()
-                .anyMatch(sf -> !removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("YES"));
-        if (sanctionedStructLeft) {
-            removedInstrumentIsins.add(instrumentISIN.getKey());
-        }
-    }
-
-    private static class RemovalResult {
-        final Set<FilteredStructuredFile> removedStructured;
-        final Set<String> removedInstrumentIsins;
-
-        RemovalResult(Set<FilteredStructuredFile> removedStructured, Set<String> removedInstrumentIsins) {
-            this.removedStructured = removedStructured;
-            this.removedInstrumentIsins = removedInstrumentIsins;
+        if (!removedInstrumentIsins.isEmpty()) {
+            filteredInstru.removeIf(i -> removedInstrumentIsins.contains(i.getIsin()));
         }
     }
 
