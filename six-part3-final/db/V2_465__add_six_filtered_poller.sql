@@ -1,6 +1,7 @@
 DECLARE
     v_seq_exists   NUMBER;
     v_table_exists NUMBER;
+    v_col_exists   NUMBER;
 BEGIN
     SELECT COUNT(*) INTO v_seq_exists
       FROM user_sequences
@@ -28,9 +29,10 @@ BEGIN
                          BATCH_JOB_EXECUTION_ID     NUMBER(15),
                          STATUS                     VARCHAR2(20 CHAR),
                          UPDATED_TIME               TIMESTAMP(6),
+                         GENERATION_REASON          VARCHAR2(20 CHAR),
                          CONSTRAINT PK_SIX_FILTERED_POLLER   PRIMARY KEY (ID)
 
         )';
-    END IF;
+    END IF;    
 END;
 /
