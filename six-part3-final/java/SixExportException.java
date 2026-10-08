@@ -33,7 +33,8 @@ public class SixExportException extends RuntimeException {
         READ_FILTERED("while reading the filtered rows of the list (FILTERED_SIX_*)", "generating the XML file"),
         GENERIC_RULES("while applying the generic rules (duplicated ISIN / sanctions)", "generating the XML file"),
         BUILD_XML("while building the XML records of the list (ListTypeBuilder)", "generating the XML file"),
-        WRITE_FILE("while creating the CONVERTER file (file name, XML, XSD validation, move to the DJ IN folder)", "generating the XML file");
+        WRITE_FILE("while creating the CONVERTER file (file name, XML, XSD validation, holding folder)", "generating the XML file"),
+        RELEASE_FILE("while moving the CONVERTER file from the holding folder to the DJ IN folder", "placing the XML file in the DJ IN folder");
 
         private final String logText;
         private final String step;
@@ -94,37 +95,61 @@ public class SixExportException extends RuntimeException {
                 + " Technical details: server log" + (jobId == null ? "" : " of job " + jobId) + ".";
     }
 
-    /** Business-level reason of a technical error (for the mail). */
+    static final String DATABASE_NOT_REACHABLE = "database not reachable";
+    static final String NOT_ENOUGH_MEMORY = "not enough memory on the batch server";
+    static final String UNEXPECTED = "unexpected technical error";
+
+    /** Business-level reason of a technical error (for the mail). The first cause that is recognised decides. */
     public static String reason(Throwable error) {
         if (isConnectionError(error)) {
-            return "database not reachable";
+            return DATABASE_NOT_REACHABLE;
         }
         for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            String message = t.getMessage() == null ? "" : t.getMessage();
-            if (message.startsWith("SIX filter")) {
-                return "invalid filter definition";
+            String reason = messageReason(t.getMessage() == null ? "" : t.getMessage());
+            if (reason == null) {
+                reason = typeReason(t);
             }
-            if (message.contains("Duplicate external reference")) {
-                return "duplicated external reference in the filtered data";
-            }
-            if (message.startsWith("No active output list")) {
-                return "no active output list";
-            }
-            if (t instanceof SAXException) {
-                return "XML file not valid against the schema";
-            }
-            if (t instanceof IOException || t instanceof UncheckedIOException) {
-                return "file could not be written to the DJ IN folder";
-            }
-            if (t instanceof NumberFormatException || t instanceof DateTimeParseException) {
-                return "invalid data in the SIX file";
-            }
-            if (t instanceof SQLException || message.contains("ORA-") || t.getClass().getName().startsWith("org.springframework.dao.")
-                    || t.getClass().getName().startsWith("org.springframework.jdbc.")) {
-                return "database error";
+            if (reason != null) {
+                return reason;
             }
         }
-        return "unexpected technical error";
+        return UNEXPECTED;
+    }
+
+    /** Reasons recognised by the message of the export's own errors. */
+    private static String messageReason(String message) {
+        if (message.startsWith("SIX filter")) {
+            return "invalid filter definition";
+        }
+        if (message.contains("Duplicate external reference")) {
+            return "duplicated external reference in the filtered data";
+        }
+        if (message.startsWith("No active output list")) {
+            return "no active output list";
+        }
+        return null;
+    }
+
+    /** Reasons recognised by the type of the error (database errors also by their ORA- code). */
+    private static String typeReason(Throwable t) {
+        if (t instanceof OutOfMemoryError) {
+            return NOT_ENOUGH_MEMORY;
+        }
+        if (t instanceof SAXException) {
+            return "XML file not valid against the schema";
+        }
+        if (t instanceof IOException || t instanceof UncheckedIOException) {
+            return "file could not be written to the holding or DJ IN folder";
+        }
+        if (t instanceof NumberFormatException || t instanceof DateTimeParseException) {
+            return "invalid data in the SIX file";
+        }
+        String type = t.getClass().getName();
+        if (t instanceof SQLException || (t.getMessage() != null && t.getMessage().contains("ORA-"))
+                || type.startsWith("org.springframework.dao.") || type.startsWith("org.springframework.jdbc.")) {
+            return "database error";
+        }
+        return null;
     }
 
     /** Database not reachable (connection lost / refused, pool exhausted): no list can be processed. */
