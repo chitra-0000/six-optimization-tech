@@ -18,6 +18,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 
@@ -214,17 +217,32 @@ public class SixDeliveryService {
     // Delivery state (used by the confidence poller)
     // =====================================================================================
 
-    /** The oldest delivery that has at least one file waiting at 90%, with the state of each of its files. */
+    /**
+     * The delivery to process, with the state of each of its files.
+     *
+     * It is the LATEST delivery (date+time of the SIX file names) that has files waiting at 90%: a new delivery is only
+     * imported when the previous one is finished, so a row of an OLDER delivery - or a second row of the same file type
+     * in the latest delivery (the lower version) - is a leftover. Leftovers are superseded: row deleted (never merged,
+     * never exported), the older delivery's files still in IN moved to IGNORE, job closed and list unlocked. No mail.
+     * Exception: a delivery already in its last step (instrument row taken) is finished first.
+     */
     public Optional<Delivery> findWaitingDelivery() {
         List<WaitingRow> rows = waitingRows();
-        Optional<Long> oldestKey = rows.stream().map(r -> r.key).filter(Objects::nonNull).min(Long::compare);
-        if (!oldestKey.isPresent()) {
+        Optional<Long> finishingKey = rows.stream()
+                .filter(r -> r.key != null && r.kind != null && r.kind.isSource() && r.batchNodeId != null)
+                .map(r -> r.key).max(Long::compare);
+        Optional<Long> latestKey = finishingKey.isPresent() ? finishingKey
+                : rows.stream().map(r -> r.key).filter(Objects::nonNull).max(Long::compare);
+        if (!latestKey.isPresent()) {
             if (!rows.isEmpty()) {
                 log.warn("SIX_CONFIDENCE_VALUES rows found whose job has no SIX file name: {}", rows);
             }
             return Optional.empty();
         }
-        Long key = oldestKey.get();
+        if (!finishingKey.isPresent()) {
+            rows = supersedeLeftovers(rows, latestKey.get());
+        }
+        Long key = latestKey.get();
         Delivery delivery = new Delivery(key);
 
         for (WaitingRow row : rows) {
@@ -245,6 +263,74 @@ public class SixDeliveryService {
         }
         filesInInputFolder(key).forEach((kind, fileName) -> delivery.file(kind).fileInInput = fileName);
         return Optional.of(delivery);
+    }
+
+    /**
+     * Supersedes the leftover rows (see findWaitingDelivery) and returns the rows that are kept: the newest row of each
+     * file type of the latest delivery (highest version), and the rows without delivery key (only logged, as before).
+     */
+    private List<WaitingRow> supersedeLeftovers(List<WaitingRow> rows, Long latestKey) {
+        Map<SixFileKind, WaitingRow> newestByKind = new EnumMap<>(SixFileKind.class);
+        for (WaitingRow row : rows) {
+            if (latestKey.equals(row.key) && row.kind != null) {
+                newestByKind.merge(row.kind, row, (a, b) -> versionOf(a) >= versionOf(b) ? a : b);
+            }
+        }
+        List<WaitingRow> kept = new ArrayList<>();
+        Map<Long, List<WaitingRow>> olderDeliveries = new TreeMap<>();
+        for (WaitingRow row : rows) {
+            if (row.key == null || (latestKey.equals(row.key) && (row.kind == null || newestByKind.get(row.kind) == row))) {
+                kept.add(row);
+            } else if (latestKey.equals(row.key)) {
+                supersedeRows(Collections.singletonList(row), latestKey);     // second row of the same type: lower version
+            } else {
+                olderDeliveries.computeIfAbsent(row.key, k -> new ArrayList<>()).add(row);
+            }
+        }
+        olderDeliveries.forEach((olderKey, olderRows) -> supersedeOlderDelivery(olderKey, olderRows, latestKey));
+        return kept;
+    }
+
+    /** Rows of an older delivery: rows deleted, its files still in IN moved to IGNORE (except a file being imported), jobs closed. */
+    private void supersedeOlderDelivery(Long olderKey, List<WaitingRow> olderRows, Long latestKey) {
+        try {
+            for (WaitingRow row : olderRows) {
+                store.deleteRow(row.exportId);                     // first: never picked again
+            }
+            Set<SixFileKind> importing = new HashSet<>();
+            for (BatchJobExecution job : openSixImportJobs()) {
+                if (olderKey.equals(store.deliveryKeyOfJob(job.getId())) && olderRows.stream().noneMatch(r -> r.jobId == job.getId())) {
+                    kindOfList(job.getReglissListId()).ifPresent(importing::add);
+                }
+            }
+            filesInInputFolder(olderKey).forEach((kind, fileName) -> {
+                if (!importing.contains(kind) && sixFileRepo.moveToIgnoreDirectoryIfPresent(fileName)) {
+                    log.info("SIX {} of the superseded delivery {} moved to the ignore folder", fileName, olderKey);
+                }
+            });
+        } catch (RuntimeException e) {
+            log.error("SIX delivery {}: could not supersede it completely, retried at the next tick", olderKey, e);
+            return;
+        }
+        supersedeRows(olderRows, latestKey);
+    }
+
+    /** Deletes the rows (again: harmless) and closes their jobs, which unlocks their lists. Logged, no mail. */
+    private void supersedeRows(List<WaitingRow> superseded, Long latestKey) {
+        for (WaitingRow row : superseded) {
+            try {
+                log.warn("SIX delivery {}: {} (version {}, job {}) superseded by delivery {} - not merged, not exported",
+                        row.key, row.kind, row.versionId, row.jobId, latestKey);
+                store.deleteRow(row.exportId);
+                closeJob(row.jobId, row.launcher);                 // unlock last
+            } catch (RuntimeException e) {
+                log.error("SIX: could not supersede {}, retried at the next tick", row, e);
+            }
+        }
+    }
+
+    private static long versionOf(WaitingRow row) {
+        return row.versionId == null ? Long.MIN_VALUE : row.versionId;
     }
 
     /** Last step of a finished delivery, for one file. Order chosen so a crash at any point can be resumed. */

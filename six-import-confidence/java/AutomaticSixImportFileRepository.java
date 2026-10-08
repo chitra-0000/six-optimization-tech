@@ -94,6 +94,20 @@ public class AutomaticSixImportFileRepository {
     }
 
     /**
+     * SIX confidence step: a file of an older delivery superseded by a newer delivery goes to IGNORE, only if it is
+     * still in IN (both servers may supersede the same delivery at the same moment).
+     *
+     * @return true if the file was moved by this call
+     */
+    public boolean moveToIgnoreDirectoryIfPresent(String fileName) {
+        try {
+            return moveIfPresent(fileName, ignoreDirectory);
+        } catch (IOException e) {
+            throw new ReglissException(e, "Could not move file: " + fileName + " to " + ignoreDirectory.getAbsolutePath());
+        }
+    }
+
+    /**
      * One atomic rename IN -> target folder. Never deletes anything in the target folder first; a file that
      * is no longer in IN (moved by another thread or server) returns false.
      */
