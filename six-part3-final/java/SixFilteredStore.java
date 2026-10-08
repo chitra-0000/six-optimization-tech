@@ -21,9 +21,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -44,6 +46,7 @@ import java.util.stream.Collectors;
  *    PENDING -> READY -> BUILDING -> BUILT -> DONE
  *       \-> DROPPED (list failed / skipped / export stopped / job dead)
  *                              \-> DROPPED (XML failed)   \-> DROPPED (move to DJ IN failed)
+ *  GENERATION_REASON (export phase 1): GENERATION / REGENERATION; the two are claimed, built and released separately.
  *  BUILT (export phase 1): the CONVERTER file is in the holding folder and waits for the other lists of its delivery;
  *  DONE: the file is in the DJ IN folder. All files of a delivery are moved together (SixXmlGenerationPoller).
  *  Every status change also sets UPDATED_TIME; a BUILDING row is also touched while its file is being built, so a
@@ -145,7 +148,9 @@ public class SixFilteredStore {
     public static final String DROPPED = "DROPPED";
 
     private static final String COLUMNS = "SELECT ID, FILE_TYPE, RAW_LIST_ID, RAW_VERSION_ID, BATCH_JOB_EXECUTION_ID,"
-            + " SIX_LIST_REFERENCE, STATUS, UPDATED_TIME FROM SIX_FILTERED_POLLER";
+            + " SIX_LIST_REFERENCE, STATUS, UPDATED_TIME, GENERATION_REASON FROM SIX_FILTERED_POLLER";
+    /** GENERATION_REASON, NULL (rows of older code) read as GENERATION. */
+    private static final String REASON = "COALESCE(GENERATION_REASON, '" + SixExportRunGuard.GENERATION + "')";
     private static final String READY_ROWS = COLUMNS + " WHERE SIX_LIST_REFERENCE = ? AND STATUS = '" + READY + "'";
     private static final String LIST_STATUSES = inList(PENDING, READY, BUILDING, BUILT, DONE, DROPPED);
     private static final String IN_USE_STATUSES = inList(PENDING, READY, BUILDING, BUILT);
@@ -192,10 +197,16 @@ public class SixFilteredStore {
                 new MapSqlParameterSource("statuses", Arrays.asList(statuses)), SixFilteredStore::pollerRow);
     }
 
-    /** Jobs that still have to filter this list (PENDING rows): the list is waiting for them. */
-    public List<Long> jobsStillFiltering(String listRef) {
+    /** Jobs of the same reason (GENERATION / REGENERATION) that still have to filter this list (PENDING rows). */
+    public List<Long> jobsStillFiltering(String listRef, String reason) {
         return jdbcTemplate.queryForList("SELECT DISTINCT BATCH_JOB_EXECUTION_ID FROM SIX_FILTERED_POLLER WHERE SIX_LIST_REFERENCE = ?"
-                + " AND STATUS = ? AND BATCH_JOB_EXECUTION_ID IS NOT NULL", Long.class, listRef, PENDING);
+                + " AND STATUS = ? AND BATCH_JOB_EXECUTION_ID IS NOT NULL AND " + REASON + " = ?", Long.class, listRef, PENDING, reason);
+    }
+
+    /** Rows of one list and raw version still in work (PENDING, READY, BUILDING), any reason. */
+    public List<PollerRow> openRowsOfList(String listRef, long rawVersionId) {
+        return jdbcTemplate.query(COLUMNS + " WHERE SIX_LIST_REFERENCE = ? AND RAW_VERSION_ID = ? AND STATUS IN "
+                + inList(PENDING, READY, BUILDING), SixFilteredStore::pollerRow, listRef, rawVersionId);
     }
 
     /** READY -> DROPPED (their list failed): they never become a file. */
@@ -247,20 +258,26 @@ public class SixFilteredStore {
     /**
      * Claims the READY rows of one output list when every required file type is there: they become BUILDING in the
      * same transaction (SELECT ... FOR UPDATE SKIP LOCKED), so only ONE server builds the file of a list.
+     * Export phase 1: per GENERATION_REASON - the automatic export (GENERATION) and a regeneration of the same list
+     * are two different files; the rows of one are never mixed with the rows of the other.
      *
      * @param requiredTypes the file types of allow.six.file.integration (upper case), e.g. INSTR, STRUCT
-     * @return claimed = true: the rows are BUILDING and belong to this caller only;
+     * @return claimed = true: the rows (one reason) are BUILDING and belong to this caller only;
      *         claimed = false: nothing changed, the visible READY rows are returned
      */
     public PollerClaim claimPollerRows(String listRef, Set<String> requiredTypes) {
         PollerClaim claim = newTx.execute(status -> {
             List<PollerRow> rows = jdbcTemplate.query(READY_ROWS + " FOR UPDATE SKIP LOCKED", SixFilteredStore::pollerRow, listRef);
-            Set<String> types = rows.stream().map(PollerRow::getFileType).filter(Objects::nonNull).collect(Collectors.toSet());
-            if (rows.isEmpty() || !types.containsAll(requiredTypes)) {
-                return new PollerClaim(false, rows);
+            Map<String, List<PollerRow>> byReason = rows.stream()
+                    .collect(Collectors.groupingBy(PollerRow::getGenerationReason, TreeMap::new, Collectors.toList()));
+            for (List<PollerRow> reasonRows : byReason.values()) {
+                Set<String> types = reasonRows.stream().map(PollerRow::getFileType).filter(Objects::nonNull).collect(Collectors.toSet());
+                if (types.containsAll(requiredTypes)) {
+                    updateIds(READY, BUILDING, ids(reasonRows));
+                    return new PollerClaim(true, reasonRows);
+                }
             }
-            updateIds(READY, BUILDING, rows.stream().map(PollerRow::getId).collect(Collectors.toList()));
-            return new PollerClaim(true, rows);
+            return new PollerClaim(false, rows);
         });
         return claim == null ? new PollerClaim(false, Collections.emptyList()) : claim;
     }
@@ -306,9 +323,11 @@ public class SixFilteredStore {
 
     private static PollerRow pollerRow(ResultSet rs, int rowNum) throws SQLException {
         Timestamp updated = rs.getTimestamp("UPDATED_TIME");
+        String reason = rs.getString("GENERATION_REASON");
         return new PollerRow(rs.getLong("ID"), rs.getString("FILE_TYPE"), nullableLong(rs, "RAW_LIST_ID"),
                 nullableLong(rs, "RAW_VERSION_ID"), nullableLong(rs, "BATCH_JOB_EXECUTION_ID"),
-                rs.getString("SIX_LIST_REFERENCE"), rs.getString("STATUS"), updated == null ? null : updated.toLocalDateTime());
+                rs.getString("SIX_LIST_REFERENCE"), rs.getString("STATUS"), updated == null ? null : updated.toLocalDateTime(),
+                reason == null ? SixExportRunGuard.GENERATION : reason);
     }
 
     /** The lists of one job: how many, how many in DJ IN, how many held, how many still open, how many dropped. */
@@ -363,9 +382,10 @@ public class SixFilteredStore {
         private final String listRef;
         private final String status;
         private final LocalDateTime updatedTime;
+        private final String generationReason;
 
         PollerRow(long id, String fileType, Long rawListId, Long rawVersionId, Long batchJobExecutionId, String listRef,
-                  String status, LocalDateTime updatedTime) {
+                  String status, LocalDateTime updatedTime, String generationReason) {
             this.id = id;
             this.fileType = fileType;
             this.rawListId = rawListId;
@@ -374,6 +394,7 @@ public class SixFilteredStore {
             this.listRef = listRef;
             this.status = status;
             this.updatedTime = updatedTime;
+            this.generationReason = generationReason;
         }
 
         public long getId() { return id; }
@@ -385,10 +406,12 @@ public class SixFilteredStore {
         public String getListRef() { return listRef; }
         public String getStatus() { return status; }
         public LocalDateTime getUpdatedTime() { return updatedTime; }
+        /** GENERATION or REGENERATION (NULL in the table = GENERATION). */
+        public String getGenerationReason() { return generationReason; }
 
         @Override
         public String toString() {
-            return "list " + listRef + " " + fileType + " " + status + " (row " + id + ", raw version " + rawVersionId
+            return "list " + listRef + " " + fileType + " " + status + " " + generationReason + " (row " + id + ", raw version " + rawVersionId
                     + ", job " + batchJobExecutionId + ")";
         }
     }

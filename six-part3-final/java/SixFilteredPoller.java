@@ -53,6 +53,14 @@ public class SixFilteredPoller extends AbstractSimpleEntity {
     @Column(name = "UPDATED_TIME")
     private LocalDateTime updatedTime;
 
+    /**
+     * GENERATION (automatic export) or REGENERATION (export asked from the UI) - export phase 1. The XML step builds
+     * and delivers the files of the two separately; NULL (rows of older code) counts as GENERATION.
+     */
+    @Getter @Setter
+    @Column(name = "GENERATION_REASON", length = 20)
+    private String generationReason;
+
     public SixFilteredPoller() {
 
     }
@@ -109,6 +117,7 @@ public class SixFilteredPoller extends AbstractSimpleEntity {
                 ", batchJobExecutionId=" + batchJobExecutionId +
                 ", status='" + status + '\'' +
                 ", updatedTime='" + updatedTime + '\'' +
+                ", generationReason='" + generationReason + '\'' +
                 '}';
     }
 }

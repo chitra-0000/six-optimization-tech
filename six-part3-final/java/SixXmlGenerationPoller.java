@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
 // ReglissBatchProfile, CloseResourcesAfter, ReglissList, ReglissException, ImportFileType, ListType, ListTypeBuilder,
 // FilteredFileBundle, FilteredInstrumentFile, FilteredStructuredFile, FilteredSixTarget, ReglissListRepository,
 // FilteredInstrumentFileRepository, FilteredStructureFileRepository, SixXmlGenerationService, BatchProgressService,
-// BatchManagementService, BatchJobExecution, BatchJobExecutionRepository, HeartbeatService, EmailService,
+// BatchManagementService, BatchJobExecution, BatchJobExecutionRepository, EmailService,
 // SixFilteredStore, SixFilteredPoller, SixExportProgress, SixExportException, SixExportRunGuard
 
 /**
@@ -55,13 +55,16 @@ import java.util.stream.Collectors;
  *  - filtered rows read with their targets in ONE query per table; O(n) duplicate-by-sanction rule (same result).
  *
  * Export phase 1 (new):
- *  - HOLD: a built file goes to the holding folder of its delivery (SixXmlGenerationService), STATUS BUILT;
+ *  - GENERATION_REASON: the automatic export (GENERATION) and a regeneration (REGENERATION) of the same list are
+ *    claimed, built, held and released separately (unit = delivery + reason); a regeneration never waits for the
+ *    other lists of the automatic export, and the automatic export never waits for a regeneration;
+ *  - HOLD: a built file goes to the holding folder of its delivery and reason (SixXmlGenerationService), STATUS BUILT;
  *  - RELEASE (every run, after the builds): a delivery is released when it has BUILT lists and none of its lists is
  *    still in progress. One server locks the BUILT rows (FOR UPDATE SKIP LOCKED), moves all the held files into DJ IN
  *    and marks them DONE in the same transaction. Lists that failed are not waited for and not delivered;
  *  - "in progress" (no status column on the job, existing rules only):
- *      PENDING  : its job is alive: not finished, its server's heartbeat is alive (HeartbeatService.isNodeAlive) and
- *                 it was updated in the last 30 minutes (the filter step refreshes it every minute);
+ *      PENDING  : its job still works (SixExportRunGuard.isJobWorking: not finished, updated in the last 30 minutes -
+ *                 the filter step refreshes it every minute - and its server's heartbeat alive);
  *      READY    : the list is complete (built in this or the next run) or its missing file type is PENDING on an
  *                 alive job;
  *      BUILDING : the build touched UPDATED_TIME in the last 30 minutes;
@@ -103,8 +106,6 @@ public class SixXmlGenerationPoller {
     private EmailService emailService;
     @Autowired
     private BatchJobExecutionRepository batchJobExecutionRepository;
-    @Autowired
-    private HeartbeatService heartbeatService;
     @Autowired
     private SixExportRunGuard sixExportRunGuard;
 
@@ -172,10 +173,10 @@ public class SixXmlGenerationPoller {
             ListType listType = buildListType(childList, build);
             keepAlive(build);
             Path file = stage(SixExportException.Stage.WRITE_FILE, build,
-                    () -> sixXmlGenerationService.createHeldFileOrThrow(listType, build.jobIds, build.delivery, reference));
+                    () -> sixXmlGenerationService.createHeldFileOrThrow(listType, build.jobIds, build.group, reference));
             sixFilteredStore.markBuilt(build.rowIds);
-            log.info("{} generated as {} in {} ms, held until every list of delivery {} is finished", build.where,
-                    file.getFileName(), System.currentTimeMillis() - start, build.delivery);
+            log.info("{} generated as {} in {} ms, held until every list of {} is finished", build.where,
+                    file.getFileName(), System.currentTimeMillis() - start, build.group);
         } catch (SixExportException e) {
             failBuild(childList, build, e);
             return;
@@ -231,6 +232,8 @@ public class SixXmlGenerationPoller {
     private final class Build {
         final String reference;
         final String delivery;
+        /** Delivery + GENERATION / REGENERATION: the unit that is held and released together. */
+        final String group;
         final List<SixFilteredStore.PollerRow> rows;
         final List<SixFilteredStore.PollerRow> superseded;
         final List<Long> rowIds;
@@ -246,15 +249,21 @@ public class SixXmlGenerationPoller {
                     .collect(Collectors.partitioningBy(r -> delivery.equals(deliveryOf(r.getRawVersionId()))));
             this.rows = byDelivery.get(true);
             this.superseded = byDelivery.get(false);
+            this.group = groupOf(delivery, rows.isEmpty() ? SixExportRunGuard.GENERATION : rows.get(0).getGenerationReason());
             this.rowIds = SixFilteredStore.ids(rows);
             this.jobIds = SixFilteredStore.jobIdsOf(rows);
             this.where = "CONVERTER file of list " + reference + " (" + rows.stream().map(r -> r.getFileType() + "(v"
-                    + r.getRawVersionId() + ")").collect(Collectors.joining(", ")) + ", delivery " + delivery + ", jobs " + jobIds + ")";
+                    + r.getRawVersionId() + ")").collect(Collectors.joining(", ")) + ", " + group + ", jobs " + jobIds + ")";
         }
 
         Long firstJob() {
             return jobIds.isEmpty() ? null : jobIds.iterator().next();
         }
+    }
+
+    /** Unit held and released together: one delivery, one reason (e.g. "20261004101500_GENERATION"). */
+    private static String groupOf(String delivery, String reason) {
+        return delivery + "_" + reason;
     }
 
     /** Delivery of a raw version (date+time of its SIX file, SixExportRunGuard); rows without version: "unknown". */
@@ -269,24 +278,27 @@ public class SixXmlGenerationPoller {
      *    (no PENDING row): the missing file type will never come. A COMPLETE list is still built.
      */
     private void dropRowsOfFailedList(String reference, Set<String> required) {
-        List<SixFilteredStore.PollerRow> rows = sixFilteredStore.readyRows(reference);
-        if (rows.isEmpty()) {
-            return;
-        }
+        Map<String, List<SixFilteredStore.PollerRow>> byReason = sixFilteredStore.readyRows(reference).stream()
+                .collect(Collectors.groupingBy(SixFilteredStore.PollerRow::getGenerationReason));
+        byReason.forEach((reason, rows) -> dropRowsOfFailedList(reference, reason, rows, required));
+    }
+
+    /** Same rule for the ready rows of one reason (GENERATION or REGENERATION). */
+    private void dropRowsOfFailedList(String reference, String reason, List<SixFilteredStore.PollerRow> rows, Set<String> required) {
         boolean complete = rows.stream().map(SixFilteredStore.PollerRow::getFileType).collect(Collectors.toSet()).containsAll(required);
         List<SixFilteredStore.PollerRow> dropped = new ArrayList<>();
-        String reason = null;
+        String why = null;
         for (SixFilteredStore.PollerRow row : rows) {
             Optional<SixFilteredPoller> stop = stopOf(reference, Collections.singletonList(row));
             boolean deliveryStopped = stop.isPresent() && SixExportRunGuard.FAILED_ALL.equals(stop.get().getStatus());
-            if (stop.isPresent() && (!deliveryStopped || (!complete && sixFilteredStore.jobsStillFiltering(reference).isEmpty()))) {
+            if (stop.isPresent() && (!deliveryStopped || (!complete && sixFilteredStore.jobsStillFiltering(reference, reason).isEmpty()))) {
                 dropped.add(row);
-                reason = sixExportRunGuard.describe(stop.get());
+                why = sixExportRunGuard.describe(stop.get());
             }
         }
         if (!dropped.isEmpty()) {
             sixFilteredStore.dropReady(SixFilteredStore.ids(dropped));
-            log.error("SIX XML step: CONVERTER file of list {} not generated (rows dropped) because {}", reference, reason);
+            log.error("SIX XML step: {} CONVERTER file of list {} not generated (rows dropped) because {}", reason, reference, why);
             removeFilteredRows(dropped);
         }
     }
@@ -325,12 +337,16 @@ public class SixXmlGenerationPoller {
             return;
         }
         LocalDateTime aliveSince = LocalDateTime.now().minusMinutes(KO_AFTER_MINUTES);
-        boolean otherJobAlive = sixFilteredStore.jobsStillFiltering(reference).stream()
-                .map(batchJobExecutionRepository::findById)
-                .anyMatch(job -> job.map(BatchJobExecution::getLastUpdateDate).filter(d -> d.isAfter(aliveSince)).isPresent());
-        if (otherJobAlive) {
-            keepAlive(SixFilteredStore.jobIdsOf(waitingRows));
-        }
+        Map<String, List<SixFilteredStore.PollerRow>> byReason = waitingRows.stream()
+                .collect(Collectors.groupingBy(SixFilteredStore.PollerRow::getGenerationReason));
+        byReason.forEach((reason, rows) -> {
+            boolean otherJobAlive = sixFilteredStore.jobsStillFiltering(reference, reason).stream()
+                    .map(batchJobExecutionRepository::findById)
+                    .anyMatch(job -> job.map(BatchJobExecution::getLastUpdateDate).filter(d -> d.isAfter(aliveSince)).isPresent());
+            if (otherJobAlive) {
+                keepAlive(SixFilteredStore.jobIdsOf(rows));
+            }
+        });
     }
 
     /**
@@ -541,10 +557,7 @@ public class SixXmlGenerationPoller {
             if (jobId == null) {
                 return false;
             }
-            return aliveByJob.computeIfAbsent(jobId, id -> batchJobExecutionRepository.findById(id)
-                    .filter(job -> !job.isFinished() && job.getLastUpdateDate() != null && job.getLastUpdateDate().isAfter(aliveSince))
-                    .filter(job -> heartbeatService.isNodeAlive(job.getNodeId()))
-                    .isPresent());
+            return aliveByJob.computeIfAbsent(jobId, sixExportRunGuard::isJobWorking);
         }
     }
 
@@ -557,8 +570,10 @@ public class SixXmlGenerationPoller {
         final Set<Long> jobs = new LinkedHashSet<>();
     }
 
+    /** Rows by unit held and released together: delivery + reason (see groupOf). */
     private Map<String, List<SixFilteredStore.PollerRow>> byDelivery(List<SixFilteredStore.PollerRow> rows) {
-        return rows.stream().collect(Collectors.groupingBy(r -> deliveryOf(r.getRawVersionId()), LinkedHashMap::new, Collectors.toList()));
+        return rows.stream().collect(Collectors.groupingBy(r -> groupOf(deliveryOf(r.getRawVersionId()), r.getGenerationReason()),
+                LinkedHashMap::new, Collectors.toList()));
     }
 
     private static Set<String> listRefs(List<SixFilteredStore.PollerRow> rows) {

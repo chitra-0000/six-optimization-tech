@@ -11,7 +11,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 // TODO: re-add project imports for: ReglissBatchProfile, SixFilteredPoller, SixFilteredPollerRepository,
-// BatchJobExecution, BatchJobExecutionRepository, ImportedFile, ImportedFileRepository, SixDeliveryService
+// BatchJobExecution, BatchJobExecutionRepository, ImportedFile, ImportedFileRepository, SixDeliveryService, HeartbeatService
 
 /**
  * Failure signals of one SIX delivery, shared by the two batch servers: rows of SIX_FILTERED_POLLER with
@@ -34,7 +34,11 @@ public class SixExportRunGuard {
 
     public static final String FAILED = "FAILED";
     public static final String FAILED_ALL = "FAILED_ALL";
-    private static final String REGENERATION = "REGENERATION";
+    /** SIX_FILTERED_POLLER.GENERATION_REASON of the list rows (export phase 1). */
+    public static final String GENERATION = "GENERATION";
+    public static final String REGENERATION = "REGENERATION";
+    /** The UI shows a job without end date as KO when it was not updated for 30 minutes. */
+    public static final long KO_AFTER_MINUTES = 30;
 
     @Autowired
     private SixFilteredPollerRepository sixFilteredPollerRepository;
@@ -44,6 +48,9 @@ public class SixExportRunGuard {
 
     @Autowired
     private ImportedFileRepository importedFileRepository;
+
+    @Autowired
+    private HeartbeatService heartbeatService;
 
     /** Delivery key per raw version (a version never changes its file). */
     private final Map<Long, String> keyByVersion = new ConcurrentHashMap<>();
@@ -104,6 +111,36 @@ public class SixExportRunGuard {
         return (FAILED_ALL.equals(failure.getStatus()) ? "the export of delivery " : "list " + failure.getSixListReference() + " of delivery ")
                 + deliveryOf(failure.getRawVersionId()) + " failed at " + failure.getInsertionTime() + " (raw version "
                 + failure.getRawVersionId() + ", job " + failure.getBatchJobExecutionId() + ")";
+    }
+
+    /**
+     * GENERATION (automatic export after an import) or REGENERATION (export asked from the UI), read from the job
+     * parameters like {@link #regenerationStart} and SixXmlGenerationService (no new column on the job).
+     */
+    public String generationReasonOf(Long batchJobExecutionId) {
+        if (batchJobExecutionId == null) {
+            return GENERATION;
+        }
+        return batchJobExecutionRepository.findById(batchJobExecutionId)
+                .filter(job -> job.getJobParams() != null && job.getJobParams().contains(REGENERATION))
+                .map(job -> REGENERATION)
+                .orElse(GENERATION);
+    }
+
+    /**
+     * The job still works: not finished, updated in the last 30 minutes and its server's heartbeat is alive
+     * (HeartbeatService.isNodeAlive). A crashed server or a stopped thread is therefore seen at the latest 30 minutes
+     * after the job's last update. Used by the XML step (release) and by a regeneration that waits.
+     */
+    public boolean isJobWorking(Long batchJobExecutionId) {
+        if (batchJobExecutionId == null) {
+            return false;
+        }
+        LocalDateTime since = LocalDateTime.now().minusMinutes(KO_AFTER_MINUTES);
+        return batchJobExecutionRepository.findById(batchJobExecutionId)
+                .filter(job -> !job.isFinished() && job.getLastUpdateDate() != null && job.getLastUpdateDate().isAfter(since))
+                .filter(job -> heartbeatService.isNodeAlive(job.getNodeId()))
+                .isPresent();
     }
 
     /** Start of the job when it is a regeneration, null for the normal export after an import. */

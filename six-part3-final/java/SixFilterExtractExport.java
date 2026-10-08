@@ -38,6 +38,8 @@ import java.util.stream.Collectors;
  *    -> An error in one list: partial rows removed, FAILED for that list (the other server skips / drops it), one mail,
  *       and the export CONTINUES with the next list. A "database not reachable" error stops everything (FAILED_ALL).
  * 3. The XML poller builds the file of a list as soon as all its file types are ready.
+ * Export phase 1: every PENDING row carries the GENERATION_REASON of the job (GENERATION / REGENERATION). A
+ *    regeneration waits, per list, while the automatic export of the same list and raw version is still working on it.
  *
  * Job status: 100 % + end date only when every list of the job has its file (SixXmlGenerationPoller). A failed or
  * stopped job keeps its percentage, gets no end date and becomes KO 30 minutes after its last update.
@@ -47,6 +49,10 @@ import java.util.stream.Collectors;
 @ReglissBatchProfile
 @Slf4j
 public class SixFilterExtractExport {
+
+    /** A regeneration re-checks every minute whether the automatic export of the same list and version is finished. */
+    @Value("${six.export.regeneration.wait.millis:60000}")
+    private long waitForAutomaticExportMillis;
 
     @Autowired
     private SixFiltersRepository sixFiltersRepository;
@@ -109,6 +115,7 @@ public class SixFilterExtractExport {
             run.kind = SixFileKind.of(run.listRaw.getImportFileType()).orElseThrow(() -> new IllegalStateException(
                     "list " + run.listRaw.getId() + " (" + run.listRaw.getImportFileType() + ") is not a SIX raw list"));
             run.delivery = sixExportRunGuard.deliveryOf(run.version.getId());
+            run.reason = sixExportRunGuard.generationReasonOf(run.jobId);
             run.progress.add(SixExportProgress.START_PERCENT);
 
             Optional<SixFilteredPoller> stop = sixExportRunGuard.deliveryStop(run.version.getId(), run.jobId);
@@ -144,8 +151,10 @@ public class SixFilterExtractExport {
             // one PENDING row per list: the state of every list of this job is visible in SIX_FILTERED_POLLER
             List<SixFilteredPoller> pending = new ArrayList<>();
             for (ReglissList list : run.lists) {
-                pending.add(new SixFilteredPoller(run.kind.getPollerFileType(), SixFilteredStore.PENDING, LocalDateTime.now(),
-                        run.listRaw.getId(), run.version.getId(), list.getReference(), run.jobId));
+                SixFilteredPoller row = new SixFilteredPoller(run.kind.getPollerFileType(), SixFilteredStore.PENDING, LocalDateTime.now(),
+                        run.listRaw.getId(), run.version.getId(), list.getReference(), run.jobId);
+                row.setGenerationReason(run.reason);
+                pending.add(row);
             }
             for (SixFilteredPoller saved : sixFilteredPollerRepository.saveAll(pending)) {
                 run.pendingRowByRef.put(saved.getSixListReference(), saved.getId());
@@ -176,6 +185,10 @@ public class SixFilterExtractExport {
 
         long t0 = System.currentTimeMillis();
         try {
+            stage(run, ref, SixExportException.Stage.FILTER, () -> {
+                waitForAutomaticExport(run, ref);
+                return null;
+            });
             List<?> rows = stage(run, ref, SixExportException.Stage.FILTER,
                     () -> sixFileFilterService.filter(run.kind, run.filtersByRef.get(ref), run.exclusions));
             run.progress.add(run.listShare * SixExportProgress.FILTER_PART);
@@ -205,6 +218,44 @@ public class SixFilterExtractExport {
             }
             failList(run, list, e);
         }
+    }
+
+    /**
+     * Export phase 1, option (a): a REGENERATION does not touch a list while the automatic export (GENERATION) of the
+     * same list and raw version is still working on it (rows PENDING / READY / BUILDING): both use the same
+     * FILTERED_SIX_* rows (VERSION_ID + SIX_LIST_REF), and the regeneration starts by deleting them. It waits (checked
+     * every minute, its job kept alive by the keep-alive timer), then continues: both exports are done, one after the
+     * other. A generation whose job stopped (server crash ...) is not waited for.
+     */
+    private void waitForAutomaticExport(Run run, String ref) {
+        if (!SixExportRunGuard.REGENERATION.equals(run.reason)) {
+            return;
+        }
+        boolean waiting = false;
+        while (automaticExportWorksOn(run, ref)) {
+            if (!waiting) {
+                log.info("SIX export {}: list {} waits for the automatic export of the same version to finish", run.where(), ref);
+                waiting = true;
+            }
+            try {
+                Thread.sleep(waitForAutomaticExportMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while waiting for the automatic export of list " + ref, e);
+            }
+        }
+        if (waiting) {
+            log.info("SIX export {}: list {} - automatic export finished, regeneration continues", run.where(), ref);
+        }
+    }
+
+    private boolean automaticExportWorksOn(Run run, String ref) {
+        LocalDateTime buildAliveSince = LocalDateTime.now().minusMinutes(SixExportRunGuard.KO_AFTER_MINUTES);
+        return sixFilteredStore.openRowsOfList(ref, run.version.getId()).stream()
+                .filter(r -> SixExportRunGuard.GENERATION.equals(r.getGenerationReason()))
+                .anyMatch(r -> SixFilteredStore.BUILDING.equals(r.getStatus())
+                        ? r.getUpdatedTime() != null && r.getUpdatedTime().isAfter(buildAliveSince)
+                        : sixExportRunGuard.isJobWorking(r.getBatchJobExecutionId()));
     }
 
     // ------------------------------------------------------------------------------------------ errors
@@ -304,6 +355,8 @@ public class SixFilterExtractExport {
         ReglissList listRaw;
         SixFileKind kind;
         String delivery;
+        /** GENERATION or REGENERATION (SixExportRunGuard). */
+        String reason;
         double listShare;
         SixFileFilterService.Exclusions exclusions;
         List<ReglissList> lists = new ArrayList<>();
