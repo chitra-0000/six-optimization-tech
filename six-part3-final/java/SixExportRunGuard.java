@@ -7,8 +7,9 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 // TODO: re-add project imports for: ReglissBatchProfile, SixFilteredPoller, SixFilteredPollerRepository,
 // BatchJobExecution, BatchJobExecutionRepository, ImportedFile, ImportedFileRepository, SixDeliveryService, HeartbeatService
@@ -52,8 +53,14 @@ public class SixExportRunGuard {
     @Autowired
     private HeartbeatService heartbeatService;
 
-    /** Delivery key per raw version (a version never changes its file). */
-    private final Map<Long, String> keyByVersion = new ConcurrentHashMap<>();
+    /** Failures recorded more than this before the job started cannot belong to the job's delivery (see find). */
+    private static final long FAILURE_LOOKBACK_HOURS = 24;
+
+    /**
+     * Delivery key per raw version (a version never changes its file). Bounded (export phase 1): only the last
+     * {@link DeliveryKeyCache#MAX_VERSIONS} versions are kept; an older one is simply read again from ImportedFile.
+     */
+    private final Map<Long, String> keyByVersion = Collections.synchronizedMap(new DeliveryKeyCache());
 
     /** Delivery of a raw version: date+time of its SIX file name ("version:<id>" if the name has no date). */
     public String deliveryOf(long rawVersionId) {
@@ -92,8 +99,17 @@ public class SixExportRunGuard {
         return list.isPresent() ? list : deliveryStop(rawVersionId, batchJobExecutionId);
     }
 
+    /**
+     * Failures of this delivery that the job must obey. Only failures recorded from one day before the job started are
+     * read (export phase 1): a failure of the same delivery is always recorded after its export started, so older
+     * rows (other deliveries, not yet removed by the cleanup) are not loaded any more. Without a job: all rows, as before.
+     */
     private Optional<SixFilteredPoller> find(String status, long rawVersionId, Long batchJobExecutionId, String listRef) {
-        List<SixFilteredPoller> failures = sixFilteredPollerRepository.findByStatus(status);
+        LocalDateTime jobStart = jobStart(batchJobExecutionId);
+        List<SixFilteredPoller> failures = jobStart == null
+                ? sixFilteredPollerRepository.findByStatus(status)
+                : sixFilteredPollerRepository.findByStatusAndInsertionTimeGreaterThanEqual(status,
+                        jobStart.minusHours(FAILURE_LOOKBACK_HOURS));
         if (failures.isEmpty()) {
             return Optional.empty();
         }
@@ -143,6 +159,13 @@ public class SixExportRunGuard {
                 .isPresent();
     }
 
+    private LocalDateTime jobStart(Long batchJobExecutionId) {
+        if (batchJobExecutionId == null) {
+            return null;
+        }
+        return batchJobExecutionRepository.findById(batchJobExecutionId).map(BatchJobExecution::getStartDate).orElse(null);
+    }
+
     /** Start of the job when it is a regeneration, null for the normal export after an import. */
     private LocalDateTime regenerationStart(Long batchJobExecutionId) {
         if (batchJobExecutionId == null) {
@@ -152,5 +175,16 @@ public class SixExportRunGuard {
                 .filter(job -> job.getJobParams() != null && job.getJobParams().contains(REGENERATION))
                 .map(BatchJobExecution::getStartDate)
                 .orElse(null);
+    }
+
+    /** Insertion-ordered map that drops its oldest entry above MAX_VERSIONS (used synchronized). */
+    private static final class DeliveryKeyCache extends LinkedHashMap<Long, String> {
+        private static final long serialVersionUID = 1L;
+        static final int MAX_VERSIONS = 500;
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, String> eldest) {
+            return size() > MAX_VERSIONS;
+        }
     }
 }

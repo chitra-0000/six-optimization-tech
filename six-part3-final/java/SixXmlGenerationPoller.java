@@ -8,6 +8,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.persistence.EntityManager;            // jakarta.persistence.* on Spring Boot 3
+import javax.persistence.PersistenceContext;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -73,6 +76,9 @@ import java.util.stream.Collectors;
  *  - the jobs of the held files are kept alive while the delivery waits for a list in progress;
  *  - the filtered rows of a list that will never be built are removed at once (not at the nightly cleanup);
  *  - memory: the filtered rows are released before the XML is written, the XML is written straight to the file;
+ *    the persistence context is cleared after each list (only ONE list's rows in memory, even if one EntityManager
+ *    lives for the whole run), so every list is (re)loaded as a managed entity just before it is built;
+ *  - read: newest VERSION_ID of the list first, then that version's rows with their targets (same rows, same order);
  *    an OutOfMemoryError while building one list fails only that list (mail), the server continues.
  */
 @ReglissBatchProfile
@@ -108,6 +114,8 @@ public class SixXmlGenerationPoller {
     private BatchJobExecutionRepository batchJobExecutionRepository;
     @Autowired
     private SixExportRunGuard sixExportRunGuard;
+    @PersistenceContext
+    private EntityManager entityManager;
 
     @Value("${allow.six.file.integration}")
     private String allowSixFilesToIntegrate;
@@ -121,17 +129,21 @@ public class SixXmlGenerationPoller {
         Set<String> required = Arrays.stream(allowSixFilesToIntegrate.toUpperCase().split(","))
                 .map(String::trim).filter(t -> !t.isEmpty()).collect(Collectors.toSet());
 
-        for (ReglissList childList : childLists) {
+        for (ReglissList loaded : childLists) {
+            String reference = loaded.getReference();
             try {
-                generateXmlFile(childList, required);
+                generateXmlFile(current(loaded), required);
             } catch (RuntimeException e) {
                 // an error OUTSIDE the stages (reading SIX_FILTERED_POLLER ...): logged, next list, next minute
-                log.error("SIX XML step: list {} not processed in this run: {}", childList.getReference(),
+                log.error("SIX XML step: list {} not processed in this run: {}", reference,
                         SixExportException.rootCause(e), e);
+            } finally {
+                releaseListData(reference);
             }
         }
         try {
-            releaseDeliveries(childLists, required);
+            // the lists again as managed entities (the persistence context was cleared after each list)
+            releaseDeliveries(reglissListRepository.findByDJFormatNotDeleted(ImportFileType.SIX_MAIN_FILE), required);
         } catch (RuntimeException e) {
             // database not reachable ...: the held files stay in the holding folder, the next run tries again
             log.error("SIX XML step: held CONVERTER files not released in this run: {}", SixExportException.rootCause(e), e);
@@ -194,10 +206,10 @@ public class SixXmlGenerationPoller {
     private ListType buildListType(ReglissList childList, Build build) {
         String reference = childList.getReference();
         List<FilteredInstrumentFile> i = stage(SixExportException.Stage.READ_FILTERED, build,
-                () -> new ArrayList<>(filteredInstrumentFileRepository.findLatestByListRefWithTargets(reference)));
+                () -> new ArrayList<>(latestInstruments(reference)));
         keepAlive(build);
         List<FilteredStructuredFile> s = stage(SixExportException.Stage.READ_FILTERED, build,
-                () -> new ArrayList<>(filteredStructureFileRepository.findLatestByListRefWithTargets(reference)));
+                () -> new ArrayList<>(latestStructured(reference)));
         log.info("Fetched {} filtered instrument rows and {} filtered structure rows for list ref {}", i.size(), s.size(), reference);
         keepAlive(build);
 
@@ -210,6 +222,46 @@ public class SixXmlGenerationPoller {
             bundle.put(childList, filteredFileBundle);
             return listTypeBuilder.generationOfListTypes(bundle, reference);
         });
+    }
+
+    /**
+     * Rows of the newest version of the list with their targets: MAX(VERSION_ID) first, then that version. Same rows and
+     * same order (f.id, t.id) as the former findLatestByListRefWithTargets, but the (VERSION_ID, SIX_LIST_REF) index is used.
+     */
+    private List<FilteredInstrumentFile> latestInstruments(String reference) {
+        Long version = filteredInstrumentFileRepository.findLatestVersionIdByListRef(reference);
+        return version == null ? Collections.emptyList()
+                : filteredInstrumentFileRepository.findByVersionAndListRefWithTargets(version, reference);
+    }
+
+    private List<FilteredStructuredFile> latestStructured(String reference) {
+        Long version = filteredStructureFileRepository.findLatestVersionIdByListRef(reference);
+        return version == null ? Collections.emptyList()
+                : filteredStructureFileRepository.findByVersionAndListRefWithTargets(version, reference);
+    }
+
+    /**
+     * The list as a managed entity of the current persistence context, read again just before its build (the context is
+     * cleared after every list; ListTypeBuilder reads the scope, short name and last version of the list). Same query and
+     * conditions as at the start of the run; if it is not found any more, the instance read at the start is used, as before.
+     */
+    private ReglissList current(ReglissList loaded) {
+        return reglissListRepository.findByListRef(Collections.singletonList(loaded.getReference())).stream()
+                .filter(l -> loaded.getReference().equals(l.getReference()))
+                .findFirst()
+                .orElse(loaded);
+    }
+
+    /**
+     * After each list: the persistence context is cleared, so the filtered rows of this list (read only, nothing to save)
+     * can be freed before the next list is read - only ONE list's rows in memory at a time.
+     */
+    private void releaseListData(String reference) {
+        try {
+            entityManager.clear();
+        } catch (RuntimeException e) {
+            log.warn("SIX XML step: persistence context not cleared after list {}: {}", reference, e.getMessage());
+        }
     }
 
     /** This list only: its jobs stay below 100 % (KO), the other lists continue and are still delivered. */

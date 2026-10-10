@@ -5,12 +5,17 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface SixFilteredPollerRepository extends EntityRepository<SixFilteredPoller, Long> {
 
     /** Rows by STATUS, e.g. the FAILED / FAILED_ALL signals of SixExportRunGuard (part 3): a handful at most. */
     List<SixFilteredPoller> findByStatus(@Param("status") String status);
+
+    /** Rows by STATUS inserted from a given time (SixExportRunGuard: failures of the running delivery only). */
+    List<SixFilteredPoller> findByStatusAndInsertionTimeGreaterThanEqual(@Param("status") String status,
+                                                                         @Param("insertionTime") LocalDateTime insertionTime);
 
     List<SixFilteredPoller> findBySixListReference(@Param("sixListReference") String sixListReference);
     @Modifying

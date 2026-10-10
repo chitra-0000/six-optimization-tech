@@ -21,15 +21,18 @@ import java.io.OutputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -61,6 +64,7 @@ public class SixXmlGenerationService {
     private static final String FILE_GENERATED_KO = "File generation KO";
     private static final String DEFAULT_HOLDING_FOLDER = "six-export-holding";
     private static final String XML_EXTENSION = ".xml";
+    private static final String TMP_EXTENSION = ".tmp";
     /** Characters allowed in a holding sub folder name (delivery key, list reference); others become "_" (Fortify). */
     private static final Pattern UNSAFE_FOLDER_CHARS = Pattern.compile("[^A-Za-z0-9_-]");
 
@@ -209,7 +213,7 @@ public class SixXmlGenerationService {
             Files.move(held, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
             log.warn("Holding folder and DJ IN folder are on different mounts: {} copied", name);
-            Path temp = Files.createTempFile(inDir, name + "_", ".tmp");
+            Path temp = Files.createTempFile(inDir, name + "_", TMP_EXTENSION);
             try {
                 Files.copy(held, temp, StandardCopyOption.REPLACE_EXISTING);
                 Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -229,6 +233,130 @@ public class SixXmlGenerationService {
             // other files are still held there
         } catch (IOException e) {
             log.warn("Holding folder {} could not be removed: {}", folder, e.getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------------------ part 4: nightly cleanup
+
+    /**
+     * CONVERTER files still in the holding folder (holding/&lt;delivery&gt;_&lt;REASON&gt;/&lt;list&gt;/*.xml). Called by the
+     * nightly cleanup only when no SIX job works, so every file found here is left over (release failed, server stopped).
+     * Links are not followed (Fortify: path manipulation).
+     */
+    public List<HeldFile> heldFiles() throws IOException {
+        Path root = holdingRoot();
+        List<HeldFile> held = new ArrayList<>();
+        for (Path group : subFolders(root)) {
+            for (Path list : subFolders(group)) {
+                for (Path file : entries(list)) {
+                    if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && file.getFileName().toString().endsWith(XML_EXTENSION)) {
+                        LocalDateTime modified = LocalDateTime.ofInstant(
+                                Files.getLastModifiedTime(file, LinkOption.NOFOLLOW_LINKS).toInstant(), ZoneId.systemDefault());
+                        held.add(new HeldFile(group.getFileName().toString(), list.getFileName().toString(), file, modified));
+                    }
+                }
+            }
+        }
+        return held;
+    }
+
+    /** Moves one left-over held file into the DJ IN folder (same move as the release). */
+    public String deliverHeldFile(HeldFile held) throws IOException {
+        Path file = checkedHeldPath(held);
+        String name = file.getFileName().toString();
+        moveIntoDjIn(file, djInFolder(), name);
+        log.info("File {} moved from {} to {}", name, file.getParent(), djInFolder());
+        return name;
+    }
+
+    /** Deletes one left-over held file (older than what DJ already received for its list). */
+    public void discardHeldFile(HeldFile held) throws IOException {
+        Files.deleteIfExists(checkedHeldPath(held));
+    }
+
+    /**
+     * Removes the ".tmp" files of builds that stopped (older than {@code tmpAgeMinutes}) and the empty sub folders of
+     * the holding folder. The holding folder itself is kept.
+     *
+     * @return number of ".tmp" files removed
+     */
+    public int removeTempFilesAndEmptyFolders(long tmpAgeMinutes) throws IOException {
+        Path root = holdingRoot();
+        long limit = System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(tmpAgeMinutes);
+        int removed = 0;
+        for (Path group : subFolders(root)) {
+            for (Path list : subFolders(group)) {
+                for (Path file : entries(list)) {
+                    if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && file.getFileName().toString().endsWith(TMP_EXTENSION)
+                            && Files.getLastModifiedTime(file, LinkOption.NOFOLLOW_LINKS).toMillis() < limit) {
+                        Files.deleteIfExists(file);
+                        removed++;
+                    }
+                }
+                deleteIfEmpty(list);
+            }
+            deleteIfEmpty(group);
+        }
+        return removed;
+    }
+
+    /** Holding sub folder name of a delivery group or a list reference (same rule as when the file was held). */
+    public static String holdingFolderName(String value) {
+        return safeName(value);
+    }
+
+    private Path checkedHeldPath(HeldFile held) {
+        Path root = holdingRoot();
+        Path file = held.getPath().toAbsolutePath().normalize();
+        if (!file.startsWith(root) || !file.getFileName().toString().endsWith(XML_EXTENSION)) {
+            throw new IllegalArgumentException("Not a held CONVERTER file: " + file);
+        }
+        return file;
+    }
+
+    private static List<Path> subFolders(Path folder) throws IOException {
+        List<Path> folders = new ArrayList<>();
+        for (Path entry : entries(folder)) {
+            if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
+                folders.add(entry);
+            }
+        }
+        return folders;
+    }
+
+    private static List<Path> entries(Path folder) throws IOException {
+        if (!Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) {
+            return new ArrayList<>();
+        }
+        try (Stream<Path> entries = Files.list(folder)) {
+            return entries.sorted().collect(Collectors.toList());
+        }
+    }
+
+    /** One CONVERTER file left in the holding folder. */
+    public static final class HeldFile {
+        private final String group;
+        private final String listFolder;
+        private final Path path;
+        private final LocalDateTime lastModified;
+
+        HeldFile(String group, String listFolder, Path path, LocalDateTime lastModified) {
+            this.group = group;
+            this.listFolder = listFolder;
+            this.path = path;
+            this.lastModified = lastModified;
+        }
+
+        /** Folder of the delivery group: &lt;delivery&gt;_GENERATION or &lt;delivery&gt;_REGENERATION. */
+        public String getGroup() { return group; }
+        /** Folder of the list (the list reference). */
+        public String getListFolder() { return listFolder; }
+        public Path getPath() { return path; }
+        public LocalDateTime getLastModified() { return lastModified; }
+
+        @Override
+        public String toString() {
+            return group + "/" + listFolder + "/" + path.getFileName();
         }
     }
 
@@ -257,7 +385,7 @@ public class SixXmlGenerationService {
      */
     private void writeFile(ListType listType, Path folder, String fileName) throws IOException, SAXException, JAXBException {
         Path target = folder.resolve(fileName);
-        Path temp = Files.createTempFile(folder, fileName + "_", ".tmp"); // same folder -> atomic move
+        Path temp = Files.createTempFile(folder, fileName + "_", TMP_EXTENSION); // same folder -> atomic move
         try {
             try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(temp, StandardOpenOption.WRITE))) {
                 ExportRepositoryImpl.writeFile(listType, out, "test1", "test2", "test3", "test4", "test5");

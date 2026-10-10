@@ -60,4 +60,27 @@ public interface FilteredInstrumentFileRepository extends EntityRepository<Filte
             @QueryHint(name = "org.hibernate.readOnly", value = "true")
     })
     List<FilteredInstrumentFile> findLatestByListRefWithTargets(@Param("reference") String reference);
+
+    /**
+     * Export phase 1, step 1 of the read of the XML step: the newest VERSION_ID of one output list (null: no rows).
+     * Same MAX as the sub-query of findLatestByListRefWithTargets.
+     */
+    @Query("SELECT MAX(g.version.id) FROM FilteredInstrumentFile g WHERE g.listRef = :reference")
+    Long findLatestVersionIdByListRef(@Param("reference") String reference);
+
+    /**
+     * Export phase 1, step 2: the rows of that version WITH their targets, in ONE query. Same select, same hints and same
+     * order (f.id, t.id) as findLatestByListRefWithTargets; the version is given instead of the MAX sub-query, so the
+     * (VERSION_ID, SIX_LIST_REF) index is used directly.
+     */
+    @Query("SELECT DISTINCT f FROM FilteredInstrumentFile f LEFT JOIN FETCH f.sixTargets t " +
+            "WHERE f.listRef = :reference " +
+            "AND f.version.id = :versionId " +
+            "ORDER BY f.id, t.id")
+    @QueryHints({
+            @QueryHint(name = "hibernate.query.passDistinctThrough", value = "false"),
+            @QueryHint(name = "org.hibernate.fetchSize", value = "1000"),
+            @QueryHint(name = "org.hibernate.readOnly", value = "true")
+    })
+    List<FilteredInstrumentFile> findByVersionAndListRefWithTargets(@Param("versionId") Long versionId, @Param("reference") String reference);
 }
