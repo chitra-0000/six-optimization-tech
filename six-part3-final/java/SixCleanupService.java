@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -22,25 +21,29 @@ import java.util.function.Supplier;
 // BatchExportRepository, VersionRepository, SixXmlGenerationService
 
 /**
- * SIX part 4: nightly cleanup (once a day, SixCleanupPoller, one server). Runs only when NOTHING SIX is in progress,
- * otherwise it is skipped until the next day (no retry):
- *  - no working SIX import or SIX export job (BATCH_IMPORT_SIXRAW / BATCH_EXPORT_SIXRAW not finished, updated in the
- *    last 30 min, server heartbeat alive: SixExportRunGuard.isJobWorking). A job of a stopped server that was never
- *    closed does not block (logged);
- *  - no SIX_CONFIDENCE_VALUES row in CTR_BATCH_EXPORT (a delivery waiting for its confidence step);
- *  - no SIX_FILTERED_FILE_GENERATION request not yet taken by a server;
- *  - no SIX_FILTERED_POLLER list row in progress: BUILT (file waiting for its release), BUILDING refreshed in the last
- *    30 min, PENDING / READY of a working job.
+ * SIX part 4: nightly cleanup (SixCleanupPoller, one server). Two INDEPENDENT parts, each with its own check; a busy
+ * part is skipped until the next day (no retry), the other one still runs.
  *
- * Steps, in this order (each one checks again that nothing started):
- *  1. Holding folder: every CONVERTER file left there (release failed, server stopped) is moved to DJ IN, unless DJ
- *     already received a newer file for that list (then it is removed, logged). ".tmp" files and empty folders removed.
- *  2. FILTERED_SIX_* emptied (TRUNCATE) and SIX_FILTERED_POLLER emptied, under a lock of SIX_FILTERED_POLLER.
- *     The poller rows are kept when a held file could not be moved (they are needed to decide again the next night).
- *  3. SIX_INSTRUMENTS / SIX_STRUCTURED / SIX_OPTION: every version older than the latest one deleted (the latest one
- *     is what a regeneration reads). A table whose latest version has no row (rollback not finished) is left as it is.
+ * EXPORT part (holding folder, FILTERED_SIX_*), runs when no SIX export is in progress:
+ *  - no working BATCH_EXPORT_SIXRAW job (not finished, updated in the last 30 min, server heartbeat alive:
+ *    SixExportRunGuard.isJobWorking; a job of a stopped server that was never closed does not block, logged);
+ *  - no SIX_FILTERED_FILE_GENERATION request not yet taken by a server;
+ *  - no SIX_FILTERED_POLLER list row in progress: BUILT, BUILDING refreshed in the last 30 min, PENDING / READY of a
+ *    working job.
+ *  Steps: 1. holding folder: every CONVERTER file left there is moved to DJ IN, unless DJ already received a newer
+ *  file for that list (then removed, logged); ".tmp" files and empty folders removed. 2. FILTERED_SIX_* emptied
+ *  (TRUNCATE) under a lock of SIX_FILTERED_POLLER. SIX_FILTERED_POLLER itself is not emptied here: its rows of older
+ *  raw versions are removed when the next automatic export starts (SixFilteredStore.deleteOlderVersionRows).
+ *
+ * IMPORT part (SIX_INSTRUMENTS / SIX_STRUCTURED / SIX_OPTION), runs when no SIX import is in progress:
+ *  - no working BATCH_IMPORT_SIXRAW job;
+ *  - no SIX_CONFIDENCE_VALUES row in CTR_BATCH_EXPORT (a delivery waiting for its confidence step).
+ *  Deletes every version older than BOTH the latest version of the table (what a regeneration reads) and the lowest
+ *  version of that table still used by an export list in progress (BUILT, BUILDING refreshed in the last 30 min, PENDING /
+ *  READY of a working job), so a running export never loses its data. A table whose latest version has no row (rollback not finished) is left as it is.
+ *
  * Never touched: VERSION, CTR_BATCH_JOB_EXECUTION, IMPORTED_FILE, CTR_BATCH_EXPORT.
- * An error stops the run (logged); every step can be run again, the next night continues.
+ * An error stops its part only (logged); every step can be run again, the next night continues.
  */
 @Service
 @ReglissBatchProfile
@@ -51,8 +54,9 @@ public class SixCleanupService {
     static final long TMP_FILE_AGE_MINUTES = 60;
     private static final String GENERATION_SUFFIX = "_" + SixExportRunGuard.GENERATION;
     private static final String REGENERATION_SUFFIX = "_" + SixExportRunGuard.REGENERATION;
-    private static final List<BatchJobType> SIX_JOB_TYPES = Collections.unmodifiableList(
-            Arrays.asList(BatchJobType.BATCH_IMPORT_SIXRAW, BatchJobType.BATCH_EXPORT_SIXRAW));
+    private static final List<BatchJobType> IMPORT_JOB_TYPES = Collections.singletonList(BatchJobType.BATCH_IMPORT_SIXRAW);
+    private static final List<BatchJobType> EXPORT_JOB_TYPES = Collections.singletonList(BatchJobType.BATCH_EXPORT_SIXRAW);
+    private static final String STOPPED_BY_JOB = "a SIX job started during the cleanup";
 
     @Autowired
     private SixCleanupStore sixCleanupStore;
@@ -77,79 +81,123 @@ public class SixCleanupService {
 
     /** What the run did (log and tests). */
     public static final class Result {
-        private String skippedBecause;
+        private String exportSkippedBecause;
+        private String importSkippedBecause;
         private final List<String> delivered = new ArrayList<>();
         private final List<String> discarded = new ArrayList<>();
         private final List<String> notMoved = new ArrayList<>();
         private boolean exportTablesCleared;
-        private boolean pollerCleared;
         private final Map<String, Integer> rawRowsDeleted = new LinkedHashMap<>();
 
-        public String getSkippedBecause() { return skippedBecause; }
+        /** Null when the export part ran. */
+        public String getExportSkippedBecause() { return exportSkippedBecause; }
+        /** Null when the import part ran. */
+        public String getImportSkippedBecause() { return importSkippedBecause; }
         public List<String> getDelivered() { return delivered; }
         public List<String> getDiscarded() { return discarded; }
         public List<String> getNotMoved() { return notMoved; }
         public boolean isExportTablesCleared() { return exportTablesCleared; }
-        public boolean isPollerCleared() { return pollerCleared; }
         public Map<String, Integer> getRawRowsDeleted() { return rawRowsDeleted; }
 
         @Override
         public String toString() {
-            return skippedBecause != null ? "skipped: " + skippedBecause
-                    : "held files delivered " + delivered + ", removed (DJ already has newer) " + discarded + ", not moved " + notMoved
-                    + ", filtered tables cleared " + exportTablesCleared + ", poller cleared " + pollerCleared
-                    + ", raw rows deleted " + rawRowsDeleted;
+            String export = exportSkippedBecause != null ? "export part skipped: " + exportSkippedBecause
+                    : "held files delivered " + delivered + ", removed (DJ already has newer) " + discarded + ", not moved "
+                    + notMoved + ", filtered tables cleared " + exportTablesCleared;
+            String raw = importSkippedBecause != null ? "import part skipped: " + importSkippedBecause
+                    : "raw rows deleted " + rawRowsDeleted;
+            return export + "; " + raw;
         }
     }
 
-    /** One cleanup run. Never throws: an error is logged and the next night runs again. */
+    /** One cleanup run: export part, then import part, independent of each other. Never throws. */
     public Result runCleanup() {
         Result result = new Result();
-        Optional<String> busy = whyBusy(true);
-        if (busy.isPresent()) {
-            result.skippedBecause = busy.get();
-            log.info("SIX cleanup skipped today: {}", busy.get());
-            return result;
-        }
         log.info("SIX cleanup started");
+        runExportPart(result);
+        runImportPart(result);
+        log.info("SIX cleanup finished: {}", result);
+        return result;
+    }
+
+    private void runExportPart(Result result) {
+        Optional<String> busy = whyExportBusy(true);
+        if (busy.isPresent()) {
+            result.exportSkippedBecause = busy.get();
+            log.info("SIX cleanup: export part skipped today: {}", busy.get());
+            return;
+        }
         try {
             recoverHeldFiles(result);
-            if (!stillIdle()) {
-                return stopped(result);
+            if (!exportIdle()) {
+                result.exportSkippedBecause = STOPPED_BY_JOB;
+                return;
             }
-            SixCleanupStore.ClearResult cleared = sixCleanupStore.clearExportTables(this::stillIdle, result.notMoved.isEmpty());
-            if (cleared != SixCleanupStore.ClearResult.CLEARED) {
-                return stopped(result);
+            if (sixCleanupStore.clearFilteredTables(this::exportIdle) == SixCleanupStore.ClearResult.CLEARED) {
+                result.exportTablesCleared = true;
+            } else {
+                result.exportSkippedBecause = STOPPED_BY_JOB;
             }
-            result.exportTablesCleared = true;
-            result.pollerCleared = result.notMoved.isEmpty();
-            if (!result.pollerCleared) {
-                log.warn("SIX cleanup: SIX_FILTERED_POLLER kept, {} held file(s) could not be moved: {}", result.notMoved.size(), result.notMoved);
-            }
-            deleteOlderRawVersions(result);
-            log.info("SIX cleanup finished: {}", result);
         } catch (RuntimeException e) {
-            log.error("SIX cleanup stopped (the next run continues): {}", SixExportException.rootCause(e), e);
-            result.skippedBecause = "error: " + SixExportException.rootCause(e);
+            log.error("SIX cleanup: export part stopped (the next run continues): {}", SixExportException.rootCause(e), e);
+            result.exportSkippedBecause = "error: " + SixExportException.rootCause(e);
         }
-        return result;
     }
 
-    private Result stopped(Result result) {
-        result.skippedBecause = "a SIX job started during the cleanup";
-        log.info("SIX cleanup stopped, {}: {}", result.skippedBecause, result);
-        return result;
+    private void runImportPart(Result result) {
+        Optional<String> busy = whyImportBusy(true);
+        if (busy.isPresent()) {
+            result.importSkippedBecause = busy.get();
+            log.info("SIX cleanup: import part skipped today: {}", busy.get());
+            return;
+        }
+        try {
+            List<SixFilteredStore.PollerRow> inProgress = rowsInProgress();
+            deleteOlderRawVersions(SixCleanupStore.RawTable.INSTRUMENTS, versionRepository::getLatestVersionIdOfInstruments, inProgress, result);
+            deleteOlderRawVersions(SixCleanupStore.RawTable.STRUCTURED, versionRepository::getLatestVersionIdOfStructure, inProgress, result);
+            deleteOlderRawVersions(SixCleanupStore.RawTable.OPTIONS, versionRepository::getLatestVersionIdOfOptions, inProgress, result);
+        } catch (RuntimeException e) {
+            log.error("SIX cleanup: import part stopped (the next run continues): {}", SixExportException.rootCause(e), e);
+            result.importSkippedBecause = "error: " + SixExportException.rootCause(e);
+        }
     }
 
-    // ------------------------------------------------------------------------------------------ idle check
+    // ------------------------------------------------------------------------------------------ idle checks
 
-    private boolean stillIdle() {
-        return !whyBusy(false).isPresent();
+    private boolean exportIdle() {
+        return !whyExportBusy(false).isPresent();
     }
 
-    /** Empty when nothing SIX is in progress; else the reason (for the log). */
-    Optional<String> whyBusy(boolean logStoppedJobs) {
-        for (BatchJobExecution job : batchJobExecutionRepository.findByJobTypeInAndEndDateIsNull(SIX_JOB_TYPES)) {
+    private boolean importIdle() {
+        return !whyImportBusy(false).isPresent();
+    }
+
+    /** Empty when no SIX export is in progress; else the reason (for the log). */
+    Optional<String> whyExportBusy(boolean logStoppedJobs) {
+        Optional<String> job = workingJob(EXPORT_JOB_TYPES, logStoppedJobs);
+        if (job.isPresent()) {
+            return job;
+        }
+        if (batchExportRepository.countSixExportsNotStarted() > 0) {
+            return Optional.of("a SIX export is requested and not yet started");
+        }
+        return listInProgress();
+    }
+
+    /** Empty when no SIX import is in progress; else the reason (for the log). */
+    Optional<String> whyImportBusy(boolean logStoppedJobs) {
+        Optional<String> job = workingJob(IMPORT_JOB_TYPES, logStoppedJobs);
+        if (job.isPresent()) {
+            return job;
+        }
+        if (batchExportRepository.countSixConfidenceEntries() > 0) {
+            return Optional.of("a SIX delivery waits for its confidence step (SIX_CONFIDENCE_VALUES)");
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> workingJob(List<BatchJobType> types, boolean logStoppedJobs) {
+        for (BatchJobExecution job : batchJobExecutionRepository.findByJobTypeInAndEndDateIsNull(types)) {
             if (sixExportRunGuard.isJobWorking(job.getId())) {
                 return Optional.of("SIX job " + job.getId() + " is running");
             }
@@ -158,34 +206,40 @@ public class SixCleanupService {
                         job.getId(), job.getNodeId());
             }
         }
-        if (batchExportRepository.countSixConfidenceEntries() > 0) {
-            return Optional.of("a SIX delivery waits for its confidence step (SIX_CONFIDENCE_VALUES)");
-        }
-        if (batchExportRepository.countSixExportsNotStarted() > 0) {
-            return Optional.of("a SIX export is requested and not yet started");
-        }
-        return listInProgress();
+        return Optional.empty();
     }
 
     private Optional<String> listInProgress() {
+        return rowsInProgress().stream().findFirst().map(row -> "SIX export list in progress: " + row);
+    }
+
+    /** Lowest raw version of this table read by an export list in progress; null when none. */
+    private static Long lowestRawVersionInUse(SixCleanupStore.RawTable raw, List<SixFilteredStore.PollerRow> inProgress) {
+        return inProgress.stream().filter(row -> raw.getPollerFileType().equals(row.getFileType()))
+                .map(SixFilteredStore.PollerRow::getRawVersionId).filter(Objects::nonNull).min(Long::compare).orElse(null);
+    }
+
+    /** List rows in progress: BUILT, BUILDING refreshed in the last 30 min, PENDING / READY of a working job. */
+    private List<SixFilteredStore.PollerRow> rowsInProgress() {
         LocalDateTime koBefore = LocalDateTime.now().minusMinutes(SixExportRunGuard.KO_AFTER_MINUTES);
         Map<Long, Boolean> working = new HashMap<>();
+        List<SixFilteredStore.PollerRow> inProgress = new ArrayList<>();
         for (SixFilteredStore.PollerRow row : sixFilteredStore.rowsInStatus(SixFilteredStore.PENDING, SixFilteredStore.READY,
                 SixFilteredStore.BUILDING, SixFilteredStore.BUILT)) {
-            boolean inProgress;
+            boolean alive;
             if (SixFilteredStore.BUILT.equals(row.getStatus())) {
-                inProgress = true;
+                alive = true;
             } else if (SixFilteredStore.BUILDING.equals(row.getStatus())) {
-                inProgress = row.getUpdatedTime() != null && row.getUpdatedTime().isAfter(koBefore);
+                alive = row.getUpdatedTime() != null && row.getUpdatedTime().isAfter(koBefore);
             } else {
-                inProgress = row.getBatchJobExecutionId() != null
+                alive = row.getBatchJobExecutionId() != null
                         && working.computeIfAbsent(row.getBatchJobExecutionId(), sixExportRunGuard::isJobWorking);
             }
-            if (inProgress) {
-                return Optional.of("SIX export list in progress: " + row);
+            if (alive) {
+                inProgress.add(row);
             }
         }
-        return Optional.empty();
+        return inProgress;
     }
 
     // ------------------------------------------------------------------------------------------ holding folder
@@ -315,13 +369,12 @@ public class SixCleanupService {
 
     // ------------------------------------------------------------------------------------------ raw tables
 
-    private void deleteOlderRawVersions(Result result) {
-        deleteOlderRawVersions(SixCleanupStore.RawTable.INSTRUMENTS, versionRepository::getLatestVersionIdOfInstruments, result);
-        deleteOlderRawVersions(SixCleanupStore.RawTable.STRUCTURED, versionRepository::getLatestVersionIdOfStructure, result);
-        deleteOlderRawVersions(SixCleanupStore.RawTable.OPTIONS, versionRepository::getLatestVersionIdOfOptions, result);
-    }
-
-    private void deleteOlderRawVersions(SixCleanupStore.RawTable raw, Supplier<Long> latestVersion, Result result) {
+    /**
+     * Deletes the versions older than both the latest one and the lowest version of this table still used by an export
+     * list in progress (an export of one file type reads the other raw tables at their latest version only).
+     */
+    private void deleteOlderRawVersions(SixCleanupStore.RawTable raw, Supplier<Long> latestVersion,
+                                        List<SixFilteredStore.PollerRow> inProgress, Result result) {
         Long latest = latestVersion.get();
         if (latest == null) {
             log.info("SIX cleanup: no {} version, nothing to delete", raw.getTable());
@@ -332,8 +385,14 @@ public class SixCleanupService {
                     latest, raw.getTable());
             return;
         }
-        int rows = sixCleanupStore.deleteOlderVersions(raw, latest, this::stillIdle);
+        long keepFrom = latest;
+        Long inUse = lowestRawVersionInUse(raw, inProgress);
+        if (inUse != null && inUse < latest) {
+            keepFrom = inUse;
+            log.info("SIX cleanup: {}: versions from {} kept, still used by a SIX export", raw.getTable(), inUse);
+        }
+        int rows = sixCleanupStore.deleteOlderVersions(raw, keepFrom, this::importIdle);
         result.rawRowsDeleted.put(raw.getTable(), rows);
-        log.info("SIX cleanup: {} row(s) of versions older than {} deleted from {} (and their SIX_TARGET rows)", rows, latest, raw.getTable());
+        log.info("SIX cleanup: {} row(s) of versions older than {} deleted from {} (and their SIX_TARGET rows)", rows, keepFrom, raw.getTable());
     }
 }

@@ -25,8 +25,9 @@ import java.util.function.BooleanSupplier;
  *  - FILTERED_SIX_TARGET, FILTERED_SIX_INSTRUMENTS / _STRUCTURED / _OPTION: TRUNCATE (the parents with CASCADE, needed
  *    by Oracle because FILTERED_SIX_TARGET references them, ON DELETE CASCADE in V2_469). When TRUNCATE is refused
  *    (rights, Oracle below 12c, ...) the table is emptied by chunked DELETEs instead.
- *  - SIX_FILTERED_POLLER: DELETE in the same transaction as the table lock (small table, a few rows per list and job).
- *  - SIX_INSTRUMENTS / SIX_STRUCTURED / SIX_OPTION: chunked DELETE of the versions OLDER than the latest one
+ *  - SIX_FILTERED_POLLER: only LOCKED while the filtered tables are emptied (its rows are removed by the automatic
+ *    export itself, SixFilteredStore.deleteOlderVersionRows).
+ *  - SIX_INSTRUMENTS / SIX_STRUCTURED / SIX_OPTION: chunked DELETE of the versions OLDER than the given one
  *    (VERSION_ID &lt; latest, index IDX_SIX_*_VERSION); SIX_TARGET rows go with them (ON DELETE CASCADE, V2_470).
  *    A version imported while the cleanup runs has a higher id and is never touched. The VERSION table is never touched.
  */
@@ -35,20 +36,27 @@ import java.util.function.BooleanSupplier;
 @Slf4j
 public class SixCleanupStore {
 
-    /** Raw SIX tables (latest version kept). */
+    /** Raw SIX tables (latest version kept), with their SixFileKind (same package). */
     public enum RawTable {
-        INSTRUMENTS("SIX_INSTRUMENTS"),
-        STRUCTURED("SIX_STRUCTURED"),
-        OPTIONS("SIX_OPTION");
+        INSTRUMENTS("SIX_INSTRUMENTS", SixFileKind.INSTRUMENT),
+        STRUCTURED("SIX_STRUCTURED", SixFileKind.STRUCTURED),
+        OPTIONS("SIX_OPTION", SixFileKind.OPTIONS);
 
         private final String table;
+        private final SixFileKind kind;
 
-        RawTable(String table) {
+        RawTable(String table, SixFileKind kind) {
             this.table = table;
+            this.kind = kind;
         }
 
         public String getTable() {
             return table;
+        }
+
+        /** SIX_FILTERED_POLLER.FILE_TYPE of the export of this raw table. */
+        public String getPollerFileType() {
+            return kind.getPollerFileType();
         }
     }
 
@@ -76,18 +84,18 @@ public class SixCleanupStore {
         newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    /** Outcome of {@link #clearExportTables}. */
+    /** Outcome of {@link #clearFilteredTables}. */
     public enum ClearResult { CLEARED, BUSY }
 
     /**
-     * Empties the filtered tables and (when {@code clearPoller}) SIX_FILTERED_POLLER, under an EXCLUSIVE lock of
+     * Empties the filtered tables (FILTERED_SIX_TARGET and FILTERED_SIX_*), under an EXCLUSIVE lock of
      * SIX_FILTERED_POLLER: an export that starts meanwhile first writes its PENDING rows there, so it waits until the
      * tables are empty and cannot lose filtered rows. {@code stillIdle} is checked again under the lock.
      * The TRUNCATEs run on their own connection (a TRUNCATE commits), the lock is released by the final commit.
      *
      * @throws DataAccessException when the lock is held by an export (NOWAIT): nothing is removed
      */
-    public ClearResult clearExportTables(BooleanSupplier stillIdle, boolean clearPoller) {
+    public ClearResult clearFilteredTables(BooleanSupplier stillIdle) {
         ClearResult result = newTx.execute(status -> {
             jdbcTemplate.execute("LOCK TABLE " + POLLER_TABLE + " IN EXCLUSIVE MODE NOWAIT");
             if (!stillIdle.getAsBoolean()) {
@@ -95,10 +103,6 @@ public class SixCleanupStore {
             }
             for (String table : FILTERED_TABLES) {
                 emptyTable(table);
-            }
-            if (clearPoller) {
-                int rows = jdbcTemplate.update("DELETE FROM " + POLLER_TABLE);
-                log.info("SIX cleanup: {} row(s) removed from {}", rows, POLLER_TABLE);
             }
             return ClearResult.CLEARED;
         });
