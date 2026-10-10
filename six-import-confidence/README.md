@@ -8,7 +8,7 @@ Apply on top of the `updatedpath` branch (part 1). Use `originalpath` for every 
 
 | File | Package | Status | What |
 |---|---|---|---|
-| `SixFileKind` | importer.six.service | **new** | The SIX file types in one enum (marker, table, link column). A 4th type = one line here. |
+| `SixFileKind` | importer.six.service | **new** | The SIX file types in one enum (marker, table, link column). A 4th type = one line here. **The file is in `six-part3-final/java`** (same class, extended with the export fields; one copy only). |
 | `SixDeliveryService` | importer.six.service | **new** | State of a delivery (files of one timestamp), rollback of the whole delivery, finish of one file, keep-alive. |
 | `SixConfidenceStore` | importer.six.service | **new** | The SQL: MERGE built from `SixFileKind`, exactly-once claim of a `CTR_BATCH_EXPORT` row, delivery key from `JOB_PARAMS`. |
 | `SixBatchConfidencePoller` | scheduler | **replaced** | Same class name and cron (`task.batch.export.generation`); new logic (below). |
@@ -17,6 +17,11 @@ Apply on top of the `updatedpath` branch (part 1). Use `originalpath` for every 
 | `SixBatchImportRunner` | importer.six.service | changed (vs updatedpath) | After each batch: `keepWaitingFilesAlive` (at most once a minute). |
 
 Re-add project imports in the IDE where marked `TODO`.
+
+Deploy together with `six-part3-final` (export, cleanup, performance), on both batch servers. Scripts: `V2_471` / `U2_471`
+are only here; `V2_464`, `U2_464`, `U2_465`, `V2_469` are identical in both folders (copy one of each); `V2_465` is only in
+`six-part3-final/db`. Properties: `application-reglissBatch-import.properties` (this folder) and
+`application-reglissBatch-export.properties` (`six-part3-final`).
 
 ## How it works
 
