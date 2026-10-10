@@ -1,0 +1,37 @@
+<div class="row mb-3">
+    <div class="col show-filter-single">
+        <button
+                pButton
+                label="{{ 'breadcrumb.button.add_filter' | translate }}"
+                buttonType="secondary"
+                buttonSize="small"
+                style="float: right;"
+                (click)="addSixFilter()"
+                >
+        </button>
+    </div>
+</div>
+<div class="mb-5">
+    <app-grid
+        [columns]="columns"
+        [tableData]="allSixFilters"
+        [mainFilter]="mainFilters"
+        [totalRecordsNumber]="allSixFilters?.length"
+        [contextMenuButtons]="contextMenuButtons"
+        (rowDelete)="deleteRow($event)"
+        (rowChangeStatus)="changeStatusFilter($event)"
+        (navigateOutput)="navigateToUrl($event)"
+        (rowClick)="goToSixFilterComponent($event)"
+    ></app-grid>
+</div>
+<div>
+    <button
+            pButton
+            label="{{ 'breadcrumb.button.regenerate' | translate }}"
+            buttonType="secondary"
+            buttonSize="small"
+            style="float: right;"
+            (click)="triggerRegenerate()"
+            >
+    </button>
+</div>

@@ -1,0 +1,33 @@
+    "import-export":{
+        "import-export-options":{
+            "log": "Delivery Log Reception",
+            "allow_incremental": "Allow incremental files",
+            "file_name": "File name",
+            "checksum": "Checksum Reception",
+            "allow_manual_upload": "Allow manual upload",
+            "transform_into_core": "Change to Dow Jones Core format"
+
+        },
+        "process_configuration":"Import Process configuration",
+        "export_formats": {
+            "firecosoft":"Fircosoft",
+            "generic":"Generic",
+            "regliss":"Regliss",
+            "vigilance":"Vigilance",
+            "safewatch":"Safewatch"
+        },
+        "success_messages" :{
+            "title": "Success",
+            "successfully_updated": "List successfully updated"
+        },
+        "success_messages_regenerate" :{
+            "title": "Success",
+            "Regenerate_updated": "Regenerated successfully"
+        },
+        "error_messages" :{
+            "error_updated": "Please select an import type before save"
+        },
+
+        "import_type": "Import type",
+        "mapping_file": "Import mapping file",
+        "upload_mapping_file": "Upload mapping file",
