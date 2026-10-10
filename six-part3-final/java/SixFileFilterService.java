@@ -2,6 +2,8 @@ package com.bnpp.regliss.importer.six.extractor;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -9,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -248,6 +251,30 @@ public class SixFileFilterService {
     @Autowired
     private NamedParameterJdbcTemplate jdbcTemplate;
 
+    /**
+     * Rows per round trip of the filter READS (include and CMIC / E014071 queries). The shared JdbcTemplate has no
+     * fetch size, so the Oracle driver default (10 rows) applied: ~110 000 round trips for 1.1 million rows. Writes are
+     * not concerned (JDBC batches, SixFilteredRowWriter). Each fetched row reserves driver buffer for every column
+     * (wide text columns such as SANCTIONS_RATIONALE), so keep it moderate.
+     */
+    @Value("${six.export.filter.fetch.size:500}")
+    private int filterFetchSize;
+
+    /** Same DataSource (same transactions) as the shared template, with the fetch size above; used only here. */
+    private NamedParameterJdbcTemplate readTemplate;
+
+    @PostConstruct
+    void initReadTemplate() {
+        JdbcTemplate shared = jdbcTemplate.getJdbcTemplate();
+        JdbcTemplate reads = new JdbcTemplate(shared.getDataSource());
+        reads.setExceptionTranslator(shared.getExceptionTranslator());
+        reads.setQueryTimeout(shared.getQueryTimeout());
+        reads.setMaxRows(shared.getMaxRows());
+        reads.setFetchSize(Math.max(1, filterFetchSize));
+        readTemplate = new NamedParameterJdbcTemplate(reads);
+        log.info("SIX filter reads: fetch size {}", reads.getFetchSize());
+    }
+
     @Autowired
     private DynamicSqlBuilder sqlBuilder;
 
@@ -348,7 +375,7 @@ public class SixFileFilterService {
         log.debug("{} include params - {}", kind, params);
 
         long start = System.currentTimeMillis();
-        List<R> included = jdbcTemplate.query(includeSql, params, extractor);
+        List<R> included = readTemplate.query(includeSql, params, extractor);
         if (included == null) {
             return Collections.emptyList();
         }
@@ -397,7 +424,7 @@ public class SixFileFilterService {
 
         long start = System.currentTimeMillis();
         Set<Long> ids = new HashSet<>();
-        jdbcTemplate.query(sql, params, rs -> {
+        readTemplate.query(sql, params, rs -> {
             String isin = rs.getString("i_isin");
             if (!emptyInAllTargets.contains(isin) && !containsInAllTargets.contains(isin)) {
                 ids.add(rs.getLong("i_id"));

@@ -35,7 +35,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 // TODO: re-add the project imports in the IDE (Alt+Enter / Optimize Imports) for:
-// ReglissBatchProfile, CloseResourcesAfter, ReglissList, ReglissException, ImportFileType, ListType, ListTypeBuilder,
+// SixKeepAliveTimer, ReglissBatchProfile, CloseResourcesAfter, ReglissList, ReglissException, ImportFileType, ListType, ListTypeBuilder,
 // FilteredFileBundle, FilteredInstrumentFile, FilteredStructuredFile, FilteredSixTarget, ReglissListRepository,
 // FilteredInstrumentFileRepository, FilteredStructureFileRepository, SixXmlGenerationService, BatchProgressService,
 // BatchManagementService, BatchJobExecution, BatchJobExecutionRepository, EmailService,
@@ -120,6 +120,14 @@ public class SixXmlGenerationPoller {
     @Value("${allow.six.file.integration}")
     private String allowSixFilesToIntegrate;
 
+    /** Refresh period of the keep-alive timer while a CONVERTER file is built. */
+    @Value("${six.export.build.keepalive.seconds:60}")
+    private long buildKeepAliveSeconds;
+
+    /** Longest build kept alive by the timer; a build still running after that turns KO like a dead one. */
+    @Value("${six.export.build.keepalive.max.minutes:120}")
+    private long buildKeepAliveMaxMinutes;
+
     @Scheduled(cron = "${task.batch.export.generation}")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @CloseResourcesAfter
@@ -180,7 +188,10 @@ public class SixXmlGenerationPoller {
 
         log.info("Data filtering completed: generating the {}", build.where);
         long start = System.currentTimeMillis();
-        try {
+        // keep-alive while the file is built (a step can take many minutes): every minute the jobs' LAST_UPDATE_DATE
+        // and the BUILDING rows' UPDATED_TIME are refreshed, so neither the UI nor the other server sees them as dead
+        try (SixKeepAliveTimer timer = SixKeepAliveTimer.start("list " + reference, buildKeepAliveSeconds,
+                buildKeepAliveMaxMinutes, () -> keepAlive(build))) {
             // the filtered rows are only referenced inside buildListType: they can be freed before the XML is written
             ListType listType = buildListType(childList, build);
             keepAlive(build);
