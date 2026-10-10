@@ -1,6 +1,7 @@
 DECLARE
     v_seq_exists   NUMBER;
     v_table_exists NUMBER;
+    v_idx_exists   NUMBER;
 BEGIN
     SELECT COUNT(*) INTO v_seq_exists
       FROM user_sequences
@@ -32,6 +33,13 @@ BEGIN
                          CONSTRAINT PK_SIX_FILTERED_POLLER   PRIMARY KEY (ID)
 
         )';
-    END IF;    
+    END IF;
+    -- export phase 1: the claim and the release read the rows by STATUS (and list) every minute on both servers
+    SELECT COUNT(*) INTO v_idx_exists
+      FROM user_indexes
+     WHERE UPPER(index_name) = 'IDX_SFP_STATUS_LIST';
+    IF v_idx_exists = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE INDEX IDX_SFP_STATUS_LIST ON SIX_FILTERED_POLLER (STATUS, SIX_LIST_REFERENCE)';
+    END IF;
 END;
 /
