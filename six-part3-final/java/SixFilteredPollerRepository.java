@@ -1,9 +1,6 @@
 package com.bnpp.regliss.repository.six;
 
-import org.springframework.data.jpa.repository.Modifying;
-import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -17,9 +14,7 @@ public interface SixFilteredPollerRepository extends EntityRepository<SixFiltere
     List<SixFilteredPoller> findByStatusAndInsertionTimeGreaterThanEqual(@Param("status") String status,
                                                                          @Param("insertionTime") LocalDateTime insertionTime);
 
-    List<SixFilteredPoller> findBySixListReference(@Param("sixListReference") String sixListReference);
-    @Modifying
-    @Transactional
-    @Query(value= " DELETE FROM SIX_FILTERED_POLLER s WHERE s.SIX_LIST_REFERENCE = :reference", nativeQuery= true)
-    void deleteEntriesBySixListReference(@Param("reference") String reference);
+    // Part 4: findBySixListReference / deleteEntriesBySixListReference removed. They read or deleted every row of a
+    // list whatever its raw version (only the old SixXmlGenerationPoller used them). Rows are now removed by
+    // SixFilteredStore.deleteOlderVersionRows (older raw versions of one file type only).
 }

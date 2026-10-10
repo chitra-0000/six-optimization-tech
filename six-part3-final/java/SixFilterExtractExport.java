@@ -116,6 +116,7 @@ public class SixFilterExtractExport {
                     "list " + run.listRaw.getId() + " (" + run.listRaw.getImportFileType() + ") is not a SIX raw list"));
             run.delivery = sixExportRunGuard.deliveryOf(run.version.getId());
             run.reason = sixExportRunGuard.generationReasonOf(run.jobId);
+            removeRowsOfOlderVersions(run);
             run.progress.add(SixExportProgress.START_PERCENT);
 
             Optional<SixFilteredPoller> stop = sixExportRunGuard.deliveryStop(run.version.getId(), run.jobId);
@@ -325,6 +326,24 @@ public class SixFilterExtractExport {
             failAll(run, new SixExportException(SixExportException.Stage.PREPARE, run.where(), null, run.fileType(), run.jobId, e));
             return null;   // not reached
         }
+    }
+
+    /**
+     * Part 4: the automatic export (not a regeneration) removes the SIX_FILTERED_POLLER rows of its file type left by
+     * older raw versions (finished, or of a job that stopped). An error here does not stop the export.
+     */
+    private void removeRowsOfOlderVersions(Run run) {
+        if (!SixExportRunGuard.GENERATION.equals(run.reason)) {
+            return;
+        }
+        quietly("remove the SIX_FILTERED_POLLER rows of older versions", () -> {
+            int removed = sixFilteredStore.deleteOlderVersionRows(run.kind.getPollerFileType(), run.version.getId(),
+                    sixExportRunGuard::isJobWorking);
+            if (removed > 0) {
+                log.info("{}: {} SIX_FILTERED_POLLER row(s) of older {} versions removed", run.where(), removed,
+                        run.kind.getPollerFileType());
+            }
+        });
     }
 
     private static void quietly(String what, Runnable action) {

@@ -26,7 +26,7 @@ import java.util.Optional;
  * imported file of the raw version.
  *
  * Regeneration: a regeneration is a new attempt, so it only sees the failures that happened AFTER it started, never
- * the old failure it repairs. The rows are removed by the nightly cleanup.
+ * the old failure it repairs. The rows are removed when the next automatic export of the same file type starts.
  */
 @Component
 @ReglissBatchProfile

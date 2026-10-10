@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +28,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -51,8 +53,9 @@ import java.util.stream.Collectors;
  *  DONE: the file is in the DJ IN folder. All files of a delivery are moved together (SixXmlGenerationPoller).
  *  Every status change also sets UPDATED_TIME; a BUILDING row is also touched while its file is being built, so a
  *  build that stopped (server crash) is recognised by an old UPDATED_TIME.
- *  Plus the FAILED / FAILED_ALL rows of SixExportRunGuard. Rows are not deleted during the export (the nightly cleanup
- *  empties the table), so the state of every list of every job is visible in the table.
+ *  Plus the FAILED / FAILED_ALL rows of SixExportRunGuard. Part 4: rows are removed when the next AUTOMATIC export of
+ *  the same file type starts (rows of older raw versions, see deleteOlderVersionRows); the rows of the current
+ *  version stay, so the state of every list of the running export is visible in the table.
  *  The XML claim and the release (SELECT ... FOR UPDATE SKIP LOCKED + status change in one transaction) guarantee that
  *  only one server builds the file of a list and only one server moves the files of a delivery.
  */
@@ -239,6 +242,49 @@ public class SixFilteredStore {
         for (String from : Arrays.asList(PENDING, READY, BUILDING)) {
             updateIds(from, DROPPED, ids);
         }
+    }
+
+    /**
+     * Part 4: called when an AUTOMATIC export (GENERATION) of one raw file starts. Removes the rows of this file type
+     * whose raw version is OLDER than the one being exported: finished rows (DONE, DROPPED, FAILED, FAILED_ALL) and
+     * unfinished rows of a job that does not work any more. Kept: every row of the current (or a newer) version,
+     * BUILT rows (a file waits in the holding folder; the nightly cleanup moves it) and unfinished rows of a job that
+     * still works. Only this file type: the other file type of the delivery is exported by another job, maybe on the
+     * other server, at the same moment.
+     *
+     * @param jobWorking SixExportRunGuard.isJobWorking
+     * @return rows removed
+     */
+    public int deleteOlderVersionRows(String fileType, long rawVersionId, Predicate<Long> jobWorking) {
+        LocalDateTime koBefore = LocalDateTime.now().minusMinutes(SixExportRunGuard.KO_AFTER_MINUTES);
+        Map<Long, Boolean> working = new HashMap<>();
+        List<Long> ids = new ArrayList<>();
+        for (PollerRow row : jdbcTemplate.query(COLUMNS + " WHERE FILE_TYPE = ? AND RAW_VERSION_ID < ?", SixFilteredStore::pollerRow,
+                fileType, rawVersionId)) {
+            if (!isStillUsed(row, koBefore, working, jobWorking)) {
+                ids.add(row.getId());
+            }
+        }
+        int removed = 0;
+        for (int start = 0; start < ids.size(); start += IN_LIST_LIMIT) {
+            MapSqlParameterSource params = new MapSqlParameterSource("ids", ids.subList(start, Math.min(start + IN_LIST_LIMIT, ids.size())))
+                    .addValue("built", BUILT);
+            removed += namedJdbcTemplate.update("DELETE FROM SIX_FILTERED_POLLER WHERE ID IN (:ids) AND STATUS <> :built", params);
+        }
+        return removed;
+    }
+
+    private static boolean isStillUsed(PollerRow row, LocalDateTime koBefore, Map<Long, Boolean> working, Predicate<Long> jobWorking) {
+        String status = row.getStatus();
+        if (BUILT.equals(status)) {
+            return true;
+        }
+        if (BUILDING.equals(status) && row.getUpdatedTime() != null && row.getUpdatedTime().isAfter(koBefore)) {
+            return true;
+        }
+        boolean unfinished = PENDING.equals(status) || READY.equals(status) || BUILDING.equals(status);
+        return unfinished && row.getBatchJobExecutionId() != null
+                && working.computeIfAbsent(row.getBatchJobExecutionId(), jobWorking::test);
     }
 
     /** UPDATED_TIME of BUILDING rows refreshed while their file is being built (shows the build is alive). */

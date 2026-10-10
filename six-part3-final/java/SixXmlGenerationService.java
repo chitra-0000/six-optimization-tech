@@ -240,7 +240,7 @@ public class SixXmlGenerationService {
 
     /**
      * CONVERTER files still in the holding folder (holding/&lt;delivery&gt;_&lt;REASON&gt;/&lt;list&gt;/*.xml). Called by the
-     * nightly cleanup only when no SIX job works, so every file found here is left over (release failed, server stopped).
+     * nightly cleanup only when no SIX export works, so every file found here is left over (release failed, server stopped).
      * Links are not followed (Fortify: path manipulation).
      */
     public List<HeldFile> heldFiles() throws IOException {
