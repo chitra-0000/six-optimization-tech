@@ -1,0 +1,3 @@
+error.SIX_NO_RAW_VERSION=No SIX instrument data is available yet for list {0}: the regeneration is possible after the first SIX import.
+error.SIX_IMPORT_IN_PROGRESS=A SIX import is in progress (or blocked) for list {0}. Please regenerate once the import is finished.
+error.SIX_REGENERATION_IN_PROGRESS=A regeneration of list {0} is already pending or running. Please wait until it is finished.
