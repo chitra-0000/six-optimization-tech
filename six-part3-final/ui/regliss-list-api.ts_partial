@@ -1,0 +1,3 @@
+  isSixRegenerationAvailable(listId: number): Observable<boolean> {
+    return this.http.get<boolean>(`${environment.baseUrl}/lists/${listId}/six-filters/regenerate/available`, {});
+  }
