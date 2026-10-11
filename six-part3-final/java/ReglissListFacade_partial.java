@@ -33,3 +33,8 @@
         }
         return tables.stream().map(sixFiltersMapper :: toSixTableFieldNamesDto).collect(toList());
     }
+
+
+    public boolean isSixRegenerationAvailable() {
+        return batchExportService.isSixRegenerationAvailable();
+    }
