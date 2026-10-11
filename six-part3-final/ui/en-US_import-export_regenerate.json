@@ -1,0 +1,11 @@
+        "success_messages_regenerate" :{
+            "title": "Success",
+            "Regenerate_updated": "Regenerated successfully"
+        },
+        "error_messages_regenerate" :{
+            "title": "Regeneration refused",
+            "no_raw_version": "No SIX instrument data is available yet: the regeneration is possible after the first SIX import.",
+            "import_in_progress": "A SIX import is in progress (or blocked). Please regenerate once the import is finished.",
+            "regeneration_in_progress": "A regeneration of this list is already pending or running. Please wait until it is finished.",
+            "failed": "The regeneration could not be requested. Please try again or contact the support."
+        },
