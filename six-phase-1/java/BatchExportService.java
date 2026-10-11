@@ -165,6 +165,7 @@ public class BatchExportService implements IBatchExportService {
     /**
      * Regenerate button of one SIX output list: one request per raw file (INSTR, STRUCT) on the latest raw versions.
      * Refused (ReglissException, nothing saved) when:
+     *  - the latest SIX instrument version has no row in SIX_INSTRUMENTS (button normally disabled then);
      *  - a SIX import is in progress (also its confidence step): a SIX raw list is locked, or the latest
      *    BATCH_IMPORT_SIXRAW job of a SIX raw list has no end date (success or failure, the delivery is not finished);
      *  - a regeneration of the same list is pending (request not yet taken) or still running.
@@ -177,6 +178,7 @@ public class BatchExportService implements IBatchExportService {
         Optional<ReglissList> lists = reglissListRepository.findById(listId);
         if(lists.isPresent()) {
             String reference = lists.get().getReference();
+            refuseIfNoRawInstrumentVersion(reference);
             refuseIfSixImportInProgress(reference);
             refuseIfRegenerationInProgress(reference);
             Version latestInstruments = versionRepo.getLatestVersionOfInstruments();
@@ -194,6 +196,24 @@ public class BatchExportService implements IBatchExportService {
 
 
     // ------------------------------------------------------------------------------------------ SIX regeneration checks
+
+    /**
+     * Regenerate button of the SIX output lists: enabled only when the latest SIX instrument version has rows in the
+     * raw table SIX_INSTRUMENTS (nothing imported yet, or the latest import rolled back without its version -> false).
+     */
+    @Transactional(readOnly = true)
+    public boolean isSixRegenerationAvailable() {
+        Long latestInstruments = versionRepo.getLatestVersionIdOfInstruments();
+        return latestInstruments != null && versionRepo.countFirstSixInstrumentRowOfVersion(latestInstruments) > 0;
+    }
+
+    /** Same rule at the click: the button can be stale or the API called directly. */
+    private void refuseIfNoRawInstrumentVersion(String listReference) {
+        if (!isSixRegenerationAvailable()) {
+            log.info("SIX regeneration of list {} refused: no SIX instrument version with raw rows", listReference);
+            throw new ReglissException(ReglissException.ErrorCode.SIX_NO_RAW_VERSION, listReference);
+        }
+    }
 
     private void refuseIfSixImportInProgress(String listReference) {
         List<Long> rawListIds = SIX_RAW_FILE_TYPES.stream()
