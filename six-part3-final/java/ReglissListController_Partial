@@ -1,0 +1,5 @@
+    @GetMapping("/{listId}/six-filters/regenerate/available")
+    public boolean isSixRegenerationAvailable(@PathVariable Long listId) {
+        listPermissions.checkListAccess(listId);
+        return listFacade.isSixRegenerationAvailable();
+    }
