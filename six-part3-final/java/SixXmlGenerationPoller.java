@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
 // FilteredFileBundle, FilteredInstrumentFile, FilteredStructuredFile, FilteredSixTarget, ReglissListRepository,
 // FilteredInstrumentFileRepository, FilteredStructureFileRepository, SixXmlGenerationService, BatchProgressService,
 // BatchManagementService, BatchJobExecution, BatchJobExecutionRepository, EmailService,
-// SixFilteredStore, SixFilteredPoller, SixExportProgress, SixExportException, SixExportRunGuard
+// SixFilteredStore, SixFilteredPoller, SixExportProgress, SixExportException, SixExportRunGuard, SixFileKind
 
 /**
  * Export step 2: when every file type of allow.six.file.integration was filtered for an output list, builds its
@@ -196,7 +196,8 @@ public class SixXmlGenerationPoller {
             ListType listType = buildListType(childList, build);
             keepAlive(build);
             Path file = stage(SixExportException.Stage.WRITE_FILE, build,
-                    () -> sixXmlGenerationService.createHeldFileOrThrow(listType, build.jobIds, build.group, reference));
+                    () -> sixXmlGenerationService.createHeldFileOrThrow(listType, build.jobIds, build.group, reference,
+                            build.instrumentVersionId));
             sixFilteredStore.markBuilt(build.rowIds);
             log.info("{} generated as {} in {} ms, held until every list of {} is finished", build.where,
                     file.getFileName(), System.currentTimeMillis() - start, build.group);
@@ -231,7 +232,7 @@ public class SixXmlGenerationPoller {
         return stage(SixExportException.Stage.BUILD_XML, build, () -> {
             Map<ReglissList, FilteredFileBundle> bundle = new HashMap<>();
             bundle.put(childList, filteredFileBundle);
-            return listTypeBuilder.generationOfListTypes(bundle, reference);
+            return listTypeBuilder.generationOfListTypes(bundle, reference, build.instrumentVersionId);
         });
     }
 
@@ -301,6 +302,8 @@ public class SixXmlGenerationPoller {
         final List<SixFilteredStore.PollerRow> superseded;
         final List<Long> rowIds;
         final Set<Long> jobIds;
+        /** Raw INSTRUMENT version of this build: source of the application dates (null: no instrument row). */
+        final Long instrumentVersionId;
         final String where;
 
         Build(String reference, List<SixFilteredStore.PollerRow> claimed) {
@@ -315,6 +318,10 @@ public class SixXmlGenerationPoller {
             this.group = groupOf(delivery, rows.isEmpty() ? SixExportRunGuard.GENERATION : rows.get(0).getGenerationReason());
             this.rowIds = SixFilteredStore.ids(rows);
             this.jobIds = SixFilteredStore.jobIdsOf(rows);
+            this.instrumentVersionId = rows.stream()
+                    .filter(r -> SixFileKind.INSTRUMENT.getPollerFileType().equals(r.getFileType()))
+                    .map(SixFilteredStore.PollerRow::getRawVersionId).filter(Objects::nonNull)
+                    .findFirst().orElse(null);
             this.where = "CONVERTER file of list " + reference + " (" + rows.stream().map(r -> r.getFileType() + "(v"
                     + r.getRawVersionId() + ")").collect(Collectors.joining(", ")) + ", " + group + ", jobs " + jobIds + ")";
         }

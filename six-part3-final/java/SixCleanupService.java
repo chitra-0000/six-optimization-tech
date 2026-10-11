@@ -27,7 +27,7 @@ import java.util.function.Supplier;
  * EXPORT part (holding folder, FILTERED_SIX_*), runs when no SIX export is in progress:
  *  - no working BATCH_EXPORT_SIXRAW job (not finished, updated in the last 30 min, server heartbeat alive:
  *    SixExportRunGuard.isJobWorking; a job of a stopped server that was never closed does not block, logged);
- *  - no SIX_FILTERED_FILE_GENERATION request not yet taken by a server;
+ *  - no SIX_FILTERED_FILE_GENERATION / SIX_FILTERED_FILE_REGENERATION request not yet taken by a server;
  *  - no SIX_FILTERED_POLLER list row in progress: BUILT, BUILDING refreshed in the last 30 min, PENDING / READY of a
  *    working job.
  *  Steps: 1. holding folder: every CONVERTER file left there is moved to DJ IN, unless DJ already received a newer

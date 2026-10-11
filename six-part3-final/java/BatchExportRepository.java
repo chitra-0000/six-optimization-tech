@@ -1,6 +1,7 @@
 package com.bnpp.regliss.repository.batch;
 
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
@@ -27,6 +28,14 @@ public interface BatchExportRepository extends EntityRepository<BatchExport, Lon
     long countSixConfidenceEntries();
 
     // SIX part 4 cleanup: a SIX export (automatic or regeneration) requested but not yet taken by a server
-    @Query(nativeQuery = true, value = "select count(*) from ctr_batch_export b where b.batch_type = 'SIX_FILTERED_FILE_GENERATION' and b.batch_node_id is null")
+    @Query(nativeQuery = true, value = "select count(*) from ctr_batch_export b"
+            + " where b.batch_type in ('SIX_FILTERED_FILE_GENERATION', 'SIX_FILTERED_FILE_REGENERATION') and b.batch_node_id is null")
     long countSixExportsNotStarted();
+
+    // SIX regeneration: a regeneration request of this output list not yet turned into a job (GENERATED_FILE_IDS is
+    // the comma separated list references; matched as a whole value, so "225" never matches "2251")
+    @Query(nativeQuery = true, value = "select count(*) from ctr_batch_export b"
+            + " where b.batch_type = 'SIX_FILTERED_FILE_REGENERATION'"
+            + " and ',' || b.generated_file_ids || ',' like '%,' || :listRef || ',%'")
+    long countSixRegenerationRequests(@Param("listRef") String listRef);
 }

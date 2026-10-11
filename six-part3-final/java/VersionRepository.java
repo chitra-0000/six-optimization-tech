@@ -136,4 +136,8 @@ public interface VersionRepository extends EntityRepository<Version, Long>, Vers
     @Query("SELECT MAX(v.id) from Version v where v.importFileType = 'SIX_OPTIONS_FILE'")
     Long getLatestVersionIdOfOptions();
 
+    // SIX regeneration: 1 when SIX_INSTRUMENTS has at least one row of this version (stops at the first row), else 0
+    @Query(nativeQuery = true, value = "SELECT COUNT(*) FROM SIX_INSTRUMENTS WHERE VERSION_ID = ?1 AND ROWNUM = 1")
+    long countFirstSixInstrumentRowOfVersion(Long versionId);
+
 }

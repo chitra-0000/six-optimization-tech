@@ -62,13 +62,25 @@ public class SixExportRunGuard {
      */
     private final Map<Long, String> keyByVersion = Collections.synchronizedMap(new DeliveryKeyCache());
 
-    /** Delivery of a raw version: date+time of its SIX file name ("version:<id>" if the name has no date). */
+    /**
+     * Delivery of a raw version: date+time of its SIX file name ("version:<id>" if not known yet).
+     * Only a real key is cached: while the file of a version is still being imported, its IMPORTED_FILE row does not
+     * exist yet (it is saved at the end of the import), so the fallback is NOT kept - otherwise the version would keep
+     * the fallback key after its import and never match the other files of its delivery.
+     */
     public String deliveryOf(long rawVersionId) {
-        return keyByVersion.computeIfAbsent(rawVersionId, v -> {
-            ImportedFile file = importedFileRepository.findByVersionId(v);
-            Long key = file == null ? null : SixDeliveryService.deliveryKey(file.getOriginalFileName());
-            return key == null ? "version:" + v : String.valueOf(key);
-        });
+        String cached = keyByVersion.get(rawVersionId);
+        if (cached != null) {
+            return cached;
+        }
+        ImportedFile file = importedFileRepository.findByVersionId(rawVersionId);
+        Long key = file == null ? null : SixDeliveryService.deliveryKey(file.getOriginalFileName());
+        if (key == null) {
+            return "version:" + rawVersionId;
+        }
+        String delivery = String.valueOf(key);
+        keyByVersion.put(rawVersionId, delivery);
+        return delivery;
     }
 
     /** One list failed: the other server must not use / build this list. */

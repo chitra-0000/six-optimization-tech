@@ -111,7 +111,7 @@ public class SixXmlGenerationService {
      * @return the name of the file placed in the DJ IN folder
      */
     public String createAndUploadFileOrThrow(ListType listType, Set<Long> batchJobExecutionIds) {
-        String fileName = converterFileName(listType, batchJobExecutionIds);
+        String fileName = converterFileName(listType, batchJobExecutionIds, null);
         writeValidatedFile(listType, djInFolder(), fileName);
         return fileName;
     }
@@ -123,7 +123,16 @@ public class SixXmlGenerationService {
      * @return the held file
      */
     public Path createHeldFileOrThrow(ListType listType, Set<Long> batchJobExecutionIds, String delivery, String listRef) {
-        String fileName = converterFileName(listType, batchJobExecutionIds);
+        return createHeldFileOrThrow(listType, batchJobExecutionIds, delivery, listRef, null);
+    }
+
+    /**
+     * Same; the date in the file name of an automatic export comes from the SIX instrument file of
+     * {@code instrumentVersionId} (the raw version being exported). Null: latest instrument version, as before.
+     */
+    public Path createHeldFileOrThrow(ListType listType, Set<Long> batchJobExecutionIds, String delivery, String listRef,
+                                      Long instrumentVersionId) {
+        String fileName = converterFileName(listType, batchJobExecutionIds, instrumentVersionId);
         Path folder = heldFolder(delivery, listRef);
         try {
             Files.createDirectories(folder);
@@ -360,11 +369,11 @@ public class SixXmlGenerationService {
         }
     }
 
-    private String converterFileName(ListType listType, Set<Long> batchJobExecutionIds) {
+    private String converterFileName(ListType listType, Set<Long> batchJobExecutionIds, Long instrumentVersionId) {
         List<BatchJobExecution> batchJobExecutionList = batchJobExecutionRepository.findAllById(batchJobExecutionIds);
         boolean regenerationFilter = batchJobExecutionList.stream()
                 .map(BatchJobExecution::getJobParams).allMatch(params -> params != null && params.contains("REGENERATION"));
-        String dateTimeToFilledInFileName = regenerationFilter ? LocalDateTime.now().format(FMT) : buildApplicationDateFromFileName();
+        String dateTimeToFilledInFileName = regenerationFilter ? LocalDateTime.now().format(FMT) : buildApplicationDateFromFileName(instrumentVersionId);
         return "CONVERTER-" + listType.getLabel() + "_" + listType.getSourceVersion() + "_" + dateTimeToFilledInFileName + XML_EXTENSION;
     }
 
@@ -408,10 +417,11 @@ public class SixXmlGenerationService {
         validator.validate(new StreamSource(xml));
     }
 
-    private String buildApplicationDateFromFileName(){
+    /** Date+time of the SIX instrument file name of this raw version (null: the latest instrument version, as before). */
+    private String buildApplicationDateFromFileName(Long instrumentVersionId){
         String match = "";
-        Version version = versionRepository.getLatestVersionOfInstruments();
-        ImportedFile importedFile = importedFileRepository.findByVersionId(version.getId());
+        Long versionId = instrumentVersionId != null ? instrumentVersionId : versionRepository.getLatestVersionOfInstruments().getId();
+        ImportedFile importedFile = importedFileRepository.findByVersionId(versionId);
         String nameWithoutExtension = FilenameUtils.getBaseName(importedFile.getOriginalFileName()).toUpperCase();
         Matcher m = date.matcher(nameWithoutExtension);
         if(m.find())

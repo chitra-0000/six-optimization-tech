@@ -67,4 +67,7 @@ public interface BatchJobExecutionRepository extends EntityRepository<BatchJobEx
     );
 
     List<BatchJobExecution> findByVersionAndJobType(Version version, BatchJobType batchJobType);
+
+    // SIX regeneration: the latest import job of one SIX raw list (no end date = its delivery is still importing)
+    Optional<BatchJobExecution> findTop1ByJobTypeAndReglissListIdOrderByStartDateDesc(BatchJobType batchJobType, Long reglissListId);
 }

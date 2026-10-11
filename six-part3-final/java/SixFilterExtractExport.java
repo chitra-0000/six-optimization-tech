@@ -25,7 +25,8 @@ import java.util.stream.Collectors;
 // SixExportRunGuard
 
 /**
- * Export step 1 (called by the shared BatchExportPoller for SIX_FILTERED_FILE_GENERATION): filters ONE raw SIX file
+ * Export step 1 (called by the shared BatchExportPoller for SIX_FILTERED_FILE_GENERATION and
+ * SIX_FILTERED_FILE_REGENERATION): filters ONE raw SIX file
  * (instrument, structured or options) for every output list and writes the FILTERED_SIX_* rows. The other raw file of
  * the delivery is filtered at the same time by the other server.
  *
