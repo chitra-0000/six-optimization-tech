@@ -1,0 +1,20 @@
+SELECT COUNT(*) AS with_isin
+  FROM SIX_STRUCTURED i
+ WHERE i.LIST_ID = 1165 AND i.VERSION_ID = 1362
+   AND i.host_isin IS NOT NULL;
+
+
+
+SELECT COUNT(*) AS in_exclusion
+  FROM SIX_STRUCTURED i
+  JOIN (SELECT DISTINCT ci.code
+          FROM code_isin ci
+          JOIN record_isin ri ON ci.id = ri.isin_id
+          JOIN record r ON ri.record_id = r.id
+          JOIN regliss_list l ON r.list_id = l.id
+          JOIN version v ON v.list_id = l.id
+         WHERE l.reference = '&excl_list' AND TRIM(ci.code) IS NOT NULL
+           AND v.id = (SELECT MAX(vv.id) FROM version vv WHERE vv.list_id = l.id AND vv.status <> 'DELETED')
+           AND r.from_version <= v.id AND r.to_version >= v.id) ex
+    ON ex.code = i.host_isin
+ WHERE i.LIST_ID = 1165 AND i.VERSION_ID = 1362;
