@@ -112,6 +112,16 @@ public enum SixFileKind {
         return "/*+ LEADING(i) USE_NL(t) INDEX(i " + versionIndex + ") INDEX(t " + targetFkIndex + ") */";
     }
 
+    /**
+     * Same join hint when the query also joins the exclusion-list ISINs (view "ex", filters "included / not included
+     * in exclusion"): the view is computed ONCE and hash-joined (built in memory, probed in the order of i / t), never
+     * re-run for each row (NO_MERGE / NO_PUSH_PRED keep it a separate, one-time view).
+     */
+    public String joinHintWithExclusion() {
+        return "/*+ LEADING(i t ex) USE_NL(t) USE_HASH(ex) SWAP_JOIN_INPUTS(ex) NO_MERGE(ex) NO_PUSH_PRED(ex) INDEX(i "
+                + versionIndex + ") INDEX(t " + targetFkIndex + ") */";
+    }
+
     public static Optional<SixFileKind> of(ImportFileType type) {
         return Arrays.stream(values()).filter(k -> k.importFileType == type).findFirst();
     }

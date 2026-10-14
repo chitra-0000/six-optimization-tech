@@ -51,6 +51,22 @@ public class DynamicSqlBuilder {
     private static final String EMPTY_IN_ALL_TARGETS = "empty in all targets";
     private static final String CONTAINS_IN_ALL_TARGETS = "contains in all targets";
 
+    /** Bind of the exclusion list reference; present in the parameters = the conditions use the view "ex". */
+    private static final String EXCLUSION_LIST_PARAM = "sixExclusionList";
+    /** Parameter-source key (never a bind in the SQL): exclusion list already checked for this query. */
+    private static final String EXCLUSION_CHECKED_KEY = "sixExclusionListChecked";
+    private static final String EXCLUSION_ALIAS = "ex";
+    /** ISINs of the latest non-deleted version of the exclusion list: same tables and conditions as before. */
+    private static final String EXCLUSION_ISINS = "SELECT ci.code AS code FROM code_isin ci"
+            + " JOIN record_isin ri ON ci.id = ri.isin_id"
+            + " JOIN record r ON ri.record_id = r.id"
+            + " JOIN regliss_list l ON r.list_id = l.id"
+            + " JOIN version v ON v.list_id = l.id"
+            + " WHERE l.reference = :" + EXCLUSION_LIST_PARAM
+            + " AND TRIM(ci.code) IS NOT NULL"
+            + " AND v.id = (SELECT MAX(vv.id) FROM version vv WHERE vv.list_id = l.id AND vv.status <> 'DELETED')"
+            + " AND r.from_version <= v.id AND r.to_version >= v.id";
+
     /*
      * "... in all targets" sub-queries: ISINs of the LATEST version of each SIX table (business rule: the
      * latest confirmed version, also used by regeneration). The old forced hint INDEX(t IDX_SIX_TARGET_SANC_REGIME_LB)
@@ -58,15 +74,15 @@ public class DynamicSqlBuilder {
      * SIX_TARGET (all versions) for every sub-query; replaced by SixFileKind.joinHint(): rows of one version
      * through the VERSION_ID index, then their targets through the FK index.
      */
-    private static final String INSTR_PART_QUERY = " IN (SELECT " + SixFileKind.INSTRUMENT.joinHint()
-            + " i.ISIN FROM SIX_INSTRUMENTS i JOIN SIX_TARGET t ON i.ID = t.SIX_INSTRU_ID "
+    private static final String ALL_TARGETS_INSTR = "SELECT " + SixFileKind.INSTRUMENT.joinHint()
+            + " i.ISIN AS six_isin FROM SIX_INSTRUMENTS i JOIN SIX_TARGET t ON i.ID = t.SIX_INSTRU_ID "
             + " WHERE i.VERSION_ID = (SELECT MAX(j.VERSION_ID) FROM SIX_INSTRUMENTS j)"
             + " AND TRIM(i.isin) IS NOT NULL ";
-    private static final String STRUCT_PART_QUERY = " UNION SELECT " + SixFileKind.STRUCTURED.joinHint()
+    private static final String ALL_TARGETS_STRUCT = " UNION SELECT " + SixFileKind.STRUCTURED.joinHint()
             + " i.HOST_ISIN FROM SIX_STRUCTURED i JOIN SIX_TARGET t ON i.ID = t.SIX_STRUCT_ID "
             + " WHERE i.VERSION_ID = (SELECT MAX(j.VERSION_ID) FROM SIX_STRUCTURED j)"
             + " AND TRIM(i.host_isin) IS NOT NULL ";
-    private static final String OPT_PART_QUERY = " UNION SELECT " + SixFileKind.OPTIONS.joinHint()
+    private static final String ALL_TARGETS_OPT = " UNION SELECT " + SixFileKind.OPTIONS.joinHint()
             + " i.ISIN_OPTION FROM SIX_OPTION i JOIN SIX_TARGET t ON i.ID = t.SIX_OPT_ID "
             + " WHERE i.VERSION_ID = (SELECT MAX(j.VERSION_ID) FROM SIX_OPTION j)"
             + " AND TRIM(i.isin_option) IS NOT NULL ";
@@ -331,42 +347,42 @@ public class DynamicSqlBuilder {
         // One bind value PER regime: Spring expands "IN (:p)" to "IN (?, ?, ...)". It used to bind the single
         // text 'eu,us_sdn', which matched nothing as soon as a sub-filter had 2 or more regimes.
         paramSrc.addValue(paramNameUUIDRegime, new ArrayList<>(emptyClause));
-        String emptyForAllTargetsQuery = subqueryBase + AND + rootIsin + INSTR_PART_QUERY +
-                AND + columnName + " " + String.format(OPERATOR_SQL.get("IN"), paramNameUUIDRegime) +
-                STRUCT_PART_QUERY +
-                AND + columnName + " " + String.format(OPERATOR_SQL.get("IN"), paramNameUUIDRegime) +
-                OPT_PART_QUERY +
-                AND + columnName + " " + String.format(OPERATOR_SQL.get("IN"), paramNameUUIDRegime) + ")";
-
-        return jdbcTemplate.query(emptyForAllTargetsQuery, paramSrc, (rs, rowNum) -> rs.getString(defineColumn(rootIsin)));
+        String targetCondition = columnName + " " + String.format(OPERATOR_SQL.get("IN"), paramNameUUIDRegime);
+        return allTargetsIsins(paramSrc, subqueryBase, rootIsin, targetCondition);
     }
 
     private List<String> notEmptyForAllTargetsInClause(String columnName, MapSqlParameterSource paramSrc, String paramNameUUIDRegime,
                                                        List<String> notEmptyClause, String subqueryBase, String rootIsin) {
         paramSrc.addValue(paramNameUUIDRegime, new ArrayList<>(notEmptyClause));   // one bind value per regime
-        String notEmptyForAllTargetsQuery = subqueryBase + AND + rootIsin + INSTR_PART_QUERY +
-                AND + columnName + " " + String.format(OPERATOR_SQL.get(NOT_IN), paramNameUUIDRegime) + AND +
-                FIELD_TO_COLUMN.get(LEGAL_BASIS) + " " + NULL +
-                STRUCT_PART_QUERY +
-                AND + columnName + " " + String.format(OPERATOR_SQL.get(NOT_IN), paramNameUUIDRegime) + AND +
-                FIELD_TO_COLUMN.get(LEGAL_BASIS) + " " + NULL +
-                OPT_PART_QUERY +
-                AND + columnName + " " + String.format(OPERATOR_SQL.get(NOT_IN), paramNameUUIDRegime) + AND +
-                FIELD_TO_COLUMN.get(LEGAL_BASIS) + " " + NULL + ")";
-
-        return jdbcTemplate.query(notEmptyForAllTargetsQuery, paramSrc, (rs, rowNum) -> rs.getString(defineColumn(rootIsin)));
+        String targetCondition = columnName + " " + String.format(OPERATOR_SQL.get(NOT_IN), paramNameUUIDRegime)
+                + AND + FIELD_TO_COLUMN.get(LEGAL_BASIS) + " " + NULL;
+        return allTargetsIsins(paramSrc, subqueryBase, rootIsin, targetCondition);
     }
 
     private List<String> containsForAllTargetsInClause(MapSqlParameterSource paramSrc, String subqueryBase, String rootIsin,
                                                        String combinedRegimeQuery) {
-        String containsForAllTargetsQuery = subqueryBase + AND + rootIsin + INSTR_PART_QUERY + AND +
-                combinedRegimeQuery +
-                STRUCT_PART_QUERY + AND +
-                combinedRegimeQuery +
-                OPT_PART_QUERY + AND +
-                combinedRegimeQuery + ")";
+        return allTargetsIsins(paramSrc, subqueryBase, rootIsin, combinedRegimeQuery);
+    }
 
-        return jdbcTemplate.query(containsForAllTargetsQuery, paramSrc, (rs, rowNum) -> rs.getString(defineColumn(rootIsin)));
+    /**
+     * "... in all targets" rules: ISINs of the version being filtered (subqueryBase) that also appear, with a target
+     * matching targetCondition, in the latest version of the instrument, structured or option file.
+     *
+     * Before: "isin IN (SELECT ... UNION SELECT ... UNION SELECT ...)". Oracle ran the 3 sub-queries again for the
+     * rows of the version (13-10 log: more than 2 hours to prepare the E014071 filters of STRUCTURED). Now the latest
+     * versions are read ONCE (view "u") and hash-joined with the distinct ISINs of the version (view "b"): same ISINs
+     * (a NULL ISIN matches nothing, as with IN).
+     */
+    private List<String> allTargetsIsins(MapSqlParameterSource paramSrc, String subqueryBase, String rootIsin,
+                                         String targetCondition) {
+        String isinColumn = defineColumn(rootIsin);
+        String query = "SELECT /*+ LEADING(b u) USE_HASH(u) NO_MERGE(b) NO_MERGE(u) NO_PUSH_PRED(u) */ DISTINCT b." + isinColumn
+                + " FROM (" + subqueryBase + ") b JOIN ("
+                + ALL_TARGETS_INSTR + AND + targetCondition
+                + ALL_TARGETS_STRUCT + AND + targetCondition
+                + ALL_TARGETS_OPT + AND + targetCondition
+                + ") u ON u.six_isin = b." + isinColumn;
+        return jdbcTemplate.query(query, paramSrc, (rs, rowNum) -> rs.getString(isinColumn));
     }
 
     private List<String> buildQueryForRegimes(String columnName, String paramNameUUIDRegime, String paramNameUUIDLegalBasis,
@@ -595,40 +611,61 @@ public class DynamicSqlBuilder {
         return column.replaceAll("[^A-Z0-9]", "_") + "_" + UUID.randomUUID().toString().replace("-", "");
     }
 
-    private String buildNotIncludedInClause(String rootIsin,
-                                            MapSqlParameterSource paramSrc, String sixExclusionList) {
-        paramSrc.addValue("sixExclusionList", sixExclusionList);
-
-        String subQuery = "SELECT DISTINCT ci.code FROM code_isin ci JOIN record_isin ri ON ci.id = ri.isin_id " +
-                "JOIN record r ON ri.record_id = r.id JOIN regliss_list l ON r.list_id = l.id " +
-                "JOIN version v ON v.list_id = l.id WHERE  l.reference = :sixExclusionList " +
-                "AND  trim(ci.code) is not null AND v.id = ( SELECT MAX(vv.id) FROM version vv WHERE  vv.list_id = l.id AND" +
-                "  vv.status <> 'DELETED' ) " +
-                "AND  r.from_version <= v.id AND  r.to_version >= v.id";
-
-        return String.format("%s NOT IN ( %s )", rootIsin, subQuery);
-
+    /**
+     * Filters "included in exclusion" / "not included in exclusion": ISIN of the row in (or not in) the latest
+     * non-deleted version of the exclusion list (six.exclusion.list).
+     *
+     * Before: "isin [NOT] IN (sub-query on code_isin, record_isin, record, regliss_list, version)". Inside an OR
+     * (e.g. "active flag = y OR not included in exclusion") Oracle cannot turn it into a join and runs the whole
+     * sub-query again for EVERY row of the version (log of 13-10: 27 minutes for one query of 38 000 rows).
+     * Now: the exclusion ISINs are read ONCE per query as the view "ex" (LEFT JOIN added by SixFileFilterService,
+     * hash join, see SixFileKind.joinHintWithExclusion) and the condition only tests the joined value. Same result
+     * as IN / NOT IN, also for a NULL ISIN and for an empty exclusion list:
+     *   - exclusion list with ISINs: IN -> ex.code IS NOT NULL; NOT IN -> isin IS NOT NULL AND ex.code IS NULL
+     *     (NOT IN never matches a NULL ISIN);
+     *   - exclusion list without ISIN (not found, empty, only deleted versions): IN matches no row, NOT IN every row.
+     * The conditions are only combined with AND / OR (never negated), so "no match" and SQL "unknown" are the same.
+     */
+    private String buildNotIncludedInClause(String rootIsin, MapSqlParameterSource paramSrc, String sixExclusionList) {
+        if (!exclusionListHasIsins(paramSrc, sixExclusionList)) {
+            return "1 = 1";
+        }
+        return "(" + rootIsin + " IS NOT NULL AND " + EXCLUSION_ALIAS + ".code IS NULL)";
     }
 
-    private String buildIncludedInClause(String rootIsin,
-                                         MapSqlParameterSource paramSrc, String sixExclusionList) {
-        paramSrc.addValue("sixExclusionList", sixExclusionList);
+    private String buildIncludedInClause(String rootIsin, MapSqlParameterSource paramSrc, String sixExclusionList) {
+        if (!exclusionListHasIsins(paramSrc, sixExclusionList)) {
+            return "1 = 0";
+        }
+        return EXCLUSION_ALIAS + ".code IS NOT NULL";
+    }
 
-        return String.format(
-                "%s IN " +
-                        "(SELECT DISTINCT ci.code " +
-                        "FROM code_isin ci " +
-                        "JOIN record_isin ri ON ci.id = ri.isin_id " +
-                        "JOIN record r        ON ri.record_id = r.id " +
-                        "JOIN regliss_list l  ON r.list_id = l.id " +
-                        "JOIN version v       ON v.list_id = l.id " +
-                        "WHERE l.reference = :sixExclusionList " +
-                        "AND trim(ci.code) is not null AND v.id = ( " +
-                        "    SELECT MAX(vv.id) " +
-                        "    FROM version vv " +
-                        "    WHERE vv.list_id = l.id " +
-                        "      AND vv.status <> 'DELETED' " +
-                        ") and r.FROM_VERSION <= v.id and r.TO_VERSION >= v.id)", rootIsin);
+    /**
+     * Whether the exclusion list has ISINs, read once per query (kept in the query's parameters). When it has, the
+     * bind EXCLUSION_LIST_PARAM is added: it tells SixFileFilterService to join the view "ex".
+     */
+    private boolean exclusionListHasIsins(MapSqlParameterSource paramSrc, String sixExclusionList) {
+        if (!paramSrc.hasValue(EXCLUSION_CHECKED_KEY)) {
+            MapSqlParameterSource listParam = new MapSqlParameterSource(EXCLUSION_LIST_PARAM, sixExclusionList);
+            Long isins = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM (" + EXCLUSION_ISINS + ") x", listParam, Long.class);
+            boolean hasIsins = isins != null && isins > 0;
+            paramSrc.addValue(EXCLUSION_CHECKED_KEY, hasIsins);
+            if (hasIsins) {
+                paramSrc.addValue(EXCLUSION_LIST_PARAM, sixExclusionList);
+            }
+        }
+        return Boolean.TRUE.equals(paramSrc.getValue(EXCLUSION_CHECKED_KEY));
+    }
+
+    /** True when the conditions built with these parameters use the exclusion view "ex" (exclusionJoin needed). */
+    public static boolean usesExclusionJoin(MapSqlParameterSource paramSrc) {
+        return paramSrc.hasValue(EXCLUSION_LIST_PARAM);
+    }
+
+    /** LEFT JOIN of the exclusion ISINs (distinct, so no row is duplicated) on the ISIN column of the file type. */
+    public static String exclusionJoin(SixFileKind kind) {
+        return " LEFT JOIN (SELECT DISTINCT e.code FROM (" + EXCLUSION_ISINS + ") e) " + EXCLUSION_ALIAS
+                + " ON " + EXCLUSION_ALIAS + ".code = " + kind.getRootIsinColumn();
     }
 
     private boolean isNumeric(String s) { return s != null && s.matches("[-+]?\\d+(\\.\\d+)?"); }

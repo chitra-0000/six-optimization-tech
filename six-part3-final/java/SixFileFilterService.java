@@ -370,7 +370,7 @@ public class SixFileFilterService {
         }
 
         String where = combineJoin(clauses);
-        String includeSql = includeSelect(kind) + (where.isEmpty() ? "" : AND + where);
+        String includeSql = includeSelect(kind, params) + (where.isEmpty() ? "" : AND + where);
         log.info("{} include sql - {}", kind, includeSql);
         log.debug("{} include params - {}", kind, params);
 
@@ -417,8 +417,8 @@ public class SixFileFilterService {
             log.info("{} exclude {}: no condition for this file type, nothing excluded", kind, label);
             return Collections.emptySet();
         }
-        String sql = "SELECT " + kind.joinHint() + " i.ID AS i_id, " + kind.getRootIsinColumn() + " AS i_isin"
-                + fromClause(kind) + AND + where;
+        String sql = "SELECT " + joinHint(kind, params) + " i.ID AS i_id, " + kind.getRootIsinColumn() + " AS i_isin"
+                + fromClause(kind, params) + AND + where;
         log.info("{} exclude {} sql - {}", kind, label, sql);
         log.debug("{} exclude {} params - {}", kind, label, params);
 
@@ -442,8 +442,25 @@ public class SixFileFilterService {
         return " FROM " + kind.getTable() + " i JOIN SIX_TARGET t ON i.ID = t." + kind.getTargetFkColumn() + MANDATORY_SELECT;
     }
 
-    private static String includeSelect(SixFileKind kind) {
-        return "SELECT " + kind.joinHint() + columns(kind) + fromClause(kind);
+    /**
+     * Same FROM, plus the exclusion ISINs (view "ex", read once per query) when a filter of the query uses
+     * "included / not included in exclusion" (DynamicSqlBuilder: one join instead of one sub-query per row).
+     */
+    private static String fromClause(SixFileKind kind, MapSqlParameterSource params) {
+        if (!DynamicSqlBuilder.usesExclusionJoin(params)) {
+            return fromClause(kind);
+        }
+        return " FROM " + kind.getTable() + " i JOIN SIX_TARGET t ON i.ID = t." + kind.getTargetFkColumn()
+                + DynamicSqlBuilder.exclusionJoin(kind) + MANDATORY_SELECT;
+    }
+
+    private static String joinHint(SixFileKind kind, MapSqlParameterSource params) {
+        return DynamicSqlBuilder.usesExclusionJoin(params) ? kind.joinHintWithExclusion() : kind.joinHint();
+    }
+
+    /** Called once the WHERE is built (it decides whether the exclusion view is joined). */
+    private static String includeSelect(SixFileKind kind, MapSqlParameterSource params) {
+        return "SELECT " + joinHint(kind, params) + columns(kind) + fromClause(kind, params);
     }
 
     /** Base of the "all targets" sub-queries: ISINs of the version being filtered (class comment, point 4). */
