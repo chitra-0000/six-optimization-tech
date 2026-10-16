@@ -1,1 +1,3 @@
 mvn -pl regliss-application-war help:effective-pom -Doutput=effective-pom.xml
+
+mvn -pl regliss-application-war dependency:tree -Dscope=test > deps.txt
