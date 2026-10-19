@@ -1,0 +1,917 @@
+'Form_dashboard contains all the functions related to the main form (actions on buttons, display changes, etc...)
+Option Compare Database
+
+'Global variable
+Private bIsUnwantedInstruRemoved As Boolean
+
+'Procedure to refresh the text displayed for the SIX Instruments loaded file
+Private Sub RefreshSixInstrumentsLabel()
+
+    lblSixInstrumentsLoaded.Caption = "Fichier SIX Instruments chargé :" & vbCrLf & CurrentDb.OpenRecordset("SELECT six_instruments_file FROM CURRENTLY_LOADED_FILES WHERE id = 1")!six_instruments_file
+
+End Sub
+
+'Procedure to refresh the text displayed for the SIX Options loaded file // Currently never called, since the loading of the Options file is disabled
+Private Sub RefreshSixOptionsLabel()
+
+    lblSixOptionsLoaded.Caption = "Fichier SIX Options chargé : LOADING DISABLED !" & vbCrLf & CurrentDb.OpenRecordset("SELECT six_options_file FROM CURRENTLY_LOADED_FILES WHERE id = 1")!six_options_file
+
+End Sub
+
+'Procedure to refresh the text displayed for the SIX Structured loaded file
+Private Sub RefreshSixStructuredLabel()
+
+    lblSixStructuredLoaded.Caption = "Fichier SIX Structured chargé :" & vbCrLf & CurrentDb.OpenRecordset("SELECT six_structured_file FROM CURRENTLY_LOADED_FILES WHERE id = 1")!six_structured_file
+
+End Sub
+
+'Procedure to refresh all the texts displayed for all loaded file
+Public Sub RefreshAllLabels()
+
+    RefreshSixInstrumentsLabel
+    RefreshSixOptionsLabel
+    RefreshSixStructuredLabel
+
+End Sub
+
+'Actions taken when the Export to XML button in clicked
+Private Sub btnExportToXML_Click()
+
+    Dim sFileSaveDirectory, sFilesSavedList, sExportResult As String
+
+    Block_Buttons
+
+    If (chkEUUS.Value And (chkEUUSCMIC.Value Or chkEUUSISIN.Value)) Or chkUK.Value Or chkUSPP.Value Then
+
+        'If unwated Instruments have not yes been removed...
+        If Not bIsUnwantedInstruRemoved Then
+
+            '...calling the homemade procedure which ultimately removes the unwanted Instruments that were kept for proper integration of the Options/Structured data
+            RemoveUnwantedInstruments
+            bIsUnwantedInstruRemoved = True
+
+        End If
+
+        'Calling the filler for ISIN PROGRAMS table now that only the ISIN we want are present in the main table
+        FillIsinPrograms
+
+        'Preparing a "Select Folder to Save file" dialog box...
+        With Application.FileDialog(msoFileDialogFolderPicker)
+
+            .AllowMultiSelect = False
+            .Title = "Choisir le répertoire de sauvegarde des fichiers XML SIX"
+
+            '... showing the dialog box and if a folder has been selected
+            If .Show Then
+
+                '... save the path
+                sFileSaveDirectory = .SelectedItems(1)
+                sFilesSavedList = vbNullString
+
+                If chkEUUS.Value Then
+
+                    If chkEUUSCMIC.Value Then
+
+                        '... Save the file (using the homemade ExportXML function) and catching filename
+                        sExportResult = ExportXML(0, sFileSaveDirectory, 1)
+
+                        If Not sExportResult Like "ERR_*" Then
+
+                            sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                        End If
+                    End If
+
+                    If chkEUUSISIN.Value Then
+
+                        sExportResult = ExportXML(1, sFileSaveDirectory, 1)
+
+                        If Not sExportResult Like "ERR_*" Then
+
+                            '... Save the file (using the homemade ExportXML function) and catching filename
+                            sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                        End If
+                    End If
+
+                End If
+
+                If chkUK.Value Then
+
+                    sExportResult = ExportXML(1, sFileSaveDirectory, 2)
+
+                    If Not sExportResult Like "ERR_*" Then
+
+                        '... Save the file (using the homemade ExportXML function) and catching filename
+                        sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                    End If
+                End If
+
+                If chkUSPP.Value Then
+
+                    sExportResult = ExportXML(1, sFileSaveDirectory, 3)
+
+                    If Not sExportResult Like "ERR_*" Then
+
+                        '... Save the file (using the homemade ExportXML function) and catching filename
+                        sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                    End If
+                End If
+
+                If sFilesSavedList <> vbNullString Then
+
+                    MsgBox "Le(s) fichier(s) XML :" & vbCrLf & sFilesSavedList & vbCrLf & vbCrLf & "a/ont bien été enregistré(s).", vbInformation + vbOKOnly, "Fichier(s) XML bien exporté(s)"
+
+                Else
+
+                    MsgBox "Aucun fichier XML n'a été enregistré.", vbExclamation + vbOKOnly, "Aucun fichier XML exporté"
+
+                End If
+            Else 'if no folder was selected...
+
+                '... display a warning message accordingly
+                MsgBox "Aucun répertoire choisi. Aucun fichier XML n'a été exporté.", vbExclamation + vbOKOnly, "Pas de répertoire choisi"
+
+            End If
+        End With
+    Else 'if no checkbox has been selected...
+
+        '... display a warning message accordingly
+        MsgBox "Aucun périmètre/programme n'a été choisi." & vbCrLf & "Veuillez en choisir au moins 1.", vbExclamation + vbOKOnly, "Pas de périmètre/programme choisi"
+
+    End If
+
+    Init_Buttons False
+
+End Sub
+
+' Actions taken when the Reset Application Dates button is clicked
+Private Sub btnFlushAllApplicationDates_Click()
+
+    Block_Buttons
+
+    If MsgBox("Ceci va vider toutes les Application Dates actuellement chargées." & vbCrLf & vbCrLf & "Continuer ?", vbQuestion + vbYesNo, "Supprimer les Application Dates ?") = vbYes Then
+
+        FlushISINHistoApplicationDate
+
+    End If
+
+    Init_Buttons
+
+End Sub
+
+'Actions taken when the Instruments import button is clicked
+Private Sub btnImportSixInstruments_Click()
+
+    Dim bFileImported As Boolean
+
+    'Disable all buttons
+    Block_Buttons
+
+    'Launch ad hoc homemade (Core) procedure to import a Six file. Param 0 --> Instruments file + Option Panel Value for file nb version (Old or New CSV format)
+    bFileImported = importSixFile(0, PnlOptFormatSIXCSV.Value)
+
+    bIsUnwantedInstruRemoved = False
+
+    'Refresh the text displayed for the SIX Instruments loaded file
+    RefreshSixInstrumentsLabel
+
+    'Reinit buttons (enable/disable buttons accordingly to the status of diverse file imports) with homemade procedure
+    Init_Buttons bFileImported
+
+End Sub
+
+'Actions taken when the Options import button is clicked // currently disabled
+Private Sub btnImportSixOptions_Click()
+
+    Dim bFileImported As Boolean
+
+    'Check if an Instruments file has been loaded...
+    If CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM CURRENTLY_LOADED_FILES WHERE six_instruments_file IS NOT NULL")!CountRows > 0 Then
+
+        If Not bIsUnwantedInstruRemoved Then
+
+            '... if Yes, disable all buttons
+            Block_Buttons
+
+            'Launch ad hoc homemade (Core) procedure to import a Six file. Param 1 --> Options file + Option Panel Value for file nb version (Old or New CSV format)
+            bFileImported = importSixFile(1, PnlOptFormatSIXCSV.Value)
+
+            'Refresh the text displayed for the SIX Options loaded file
+            RefreshSixOptionsLabel
+
+            'Reinit buttons (enable/disable buttons accordingly to the status of diverse file imports) with homemade procedure
+            Init_Buttons bFileImported
+
+        Else
+
+            '... display a warning message accordingly and do nothing
+            MsgBox "Un export XML a déjà eu lieu et a tronqué une partie des informations référentielles du fichier ""Instruments"" actuellement chargé (processus normal)." & vbCrLf & "Le fichier ""Options"" a besoin de l'intégralité des données provenant du fichier ""Instruments"" pour être correctement importé.", vbExclamation + vbOKOnly, "Fichier ""Instruments"" partiellement tronqué suite à Export"
+
+        End If
+
+    Else 'if no Instruments file has been previously loaded...
+
+        '... display a warning message accordingly and do nothing
+        MsgBox "Aucun fichier ""Instruments"" n'a été chargé." & vbCrLf & "Le fichier ""Options"" a besoin du fichier ""Instruments"" pour être correctement importé.", vbExclamation + vbOKOnly, "Fichier ""Instruments"" manquant"
+
+    End If
+End Sub
+
+'Actions taken when the Instruments import button is clicked
+Private Sub btnImportSixStructured_Click()
+
+    Dim bFileImported As Boolean
+
+    'Check if an Instruments file has been loaded...
+    If CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM CURRENTLY_LOADED_FILES WHERE six_instruments_file IS NOT NULL")!CountRows > 0 Then
+
+        If Not bIsUnwantedInstruRemoved Then
+
+            '... if Yes, disable all buttons
+            Block_Buttons
+
+            'Launch ad hoc homemade (Core) procedure to import a Six file. Param 2 --> Structured file + Option Panel Value for file nb version (Old or New CSV format)
+            bFileImported = importSixFile(2, PnlOptFormatSIXCSV.Value)
+
+            'Refresh the text displayed for the SIX Structured loaded file
+            RefreshSixStructuredLabel
+
+            'Reinit buttons (enable/disable buttons accordingly to the status of diverse file imports) with homemade procedure
+            Init_Buttons bFileImported
+
+        Else
+
+            '... display a warning message accordingly and do nothing
+            MsgBox "Un export XML a déjà eu lieu et a tronqué une partie des informations référentielles du fichier ""Instruments"" actuellement chargé (processus normal)." & vbCrLf & "Le fichier ""Structured"" a besoin de l'intégralité des données provenant du fichier ""Instruments"" pour être correctement importé.", vbExclamation + vbOKOnly, "Fichier ""Instruments"" partiellement tronqué suite à Export"
+
+        End If
+
+    Else 'if no Instruments file has been previously loaded...
+
+        '... display a warning message accordingly and do nothing
+        MsgBox "Aucun fichier ""Instruments"" n'a été chargé." & vbCrLf & "Le fichier ""Structured"" a besoin du fichier ""Instruments"" pour être correctement importé.", vbExclamation + vbOKOnly, "Fichier ""Instruments"" manquant"
+
+    End If
+End Sub
+
+'Procedure to properly enable/disable all clickable buttons and checkboxes of the Dashboard according to the loading status of some file
+'This is inherited from a previous version of the tool where the loading order was forced, enabling the buttons only when the previous expected file was loaded
+'Since then, it has been devised that only the Instruments file was mandatory as the 1st load, so the check has been deported
+Public Sub Init_Buttons(Optional ByVal bIsStandardExec As Boolean = True)
+
+    Dim iCntSixInstruments, iSixFileNbDefault, iCntSixOptions, iCntSixStructured, iCntUSPPIsins As Integer
+
+    'Counting how many rows of each file are already in the database
+    iCntSixInstruments = CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN WHERE rsf_id = 0")!CountRows
+    iCntSixOptions = CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN WHERE rsf_id = 1")!CountRows
+    iCntSixStructured = CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN WHERE rsf_id = 2")!CountRows
+    'commented and reviewed for handling inactive isin (AER_EVOLLM-3)
+    'iCntUSPPIsins = CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN WHERE isin NOT LIKE '" & sInstruNullIsinPattern & "*' AND active_flag <> 'Inactive' AND " & GetUSPPISINSqlFilter & " AND sanctioned = 'Yes' AND confidence_level > 25")!CountRows
+    If chkExportInactiveISIN.Value = False Then
+        iCntUSPPIsins = CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN WHERE isin NOT LIKE '" & sInstruNullIsinPattern & "*' AND active_flag <> 'Inactive' AND " & GetUSPPISINSqlFilter & " AND sanctioned = 'Yes' AND confidence_level > 25")!CountRows
+    Else
+        iCntUSPPIsins = CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN WHERE isin NOT LIKE '" & sInstruNullIsinPattern & "*' AND " & GetUSPPISINSqlFilter & " AND sanctioned = 'Yes' AND confidence_level > 25")!CountRows
+    End If
+
+    'Enabling/disabling Import buttons
+    btnImportSixInstruments.Enabled = True
+    'Disabled but to reactivate if Options comes back in scope
+    btnImportSixOptions.Enabled = False
+    btnImportSixStructured.Enabled = True
+
+    'Enable Export button if some rows were found/disable it if not and USPP checkboxes if USPP data material has been found
+    btnExportToXML.Enabled = (iCntSixInstruments + iCntSixOptions + iCntSixStructured > 0)
+    chkSplitUSPP.Enabled = (btnExportToXML.Enabled And iCntUSPPIsins > 0)
+    chkSplitUSPP.Value = IIf(bIsStandardExec, (btnExportToXML.Enabled And iCntUSPPIsins > 0), chkSplitUSPP.Value)
+    chkSplitUSPP_Click
+    chkEUUS.Enabled = btnExportToXML.Enabled
+    chkEUUS_Click
+    chkUK.Enabled = btnExportToXML.Enabled
+    activateBtnMajApplicationDates
+
+    'Enable/Disable Option panel + Setting default valor
+    With PnlOptFormatSIXCSV
+        If iCntSixInstruments > 0 Then
+
+            .Value = CurrentDb.OpenRecordset("SELECT DISTINCT rsf_file_nb FROM SIX_ISIN WHERE rsf_id = 0")!rsf_file_nb
+            .Enabled = False
+            setSixFileInstruDate
+            setSixFileInstruTime
+
+        Else
+
+            .Enabled = True
+
+        End If
+    End With
+
+    'Enable all other buttons
+    btnReset.Enabled = True
+    btnSetFilterIsinUSPP.Enabled = True
+    btnOriginalUSPPFilter.Enabled = True
+    btnFlushAllApplicationDates.Enabled = True
+    btnUSPPFilterHelp.Enabled = True
+    PnlOptDateFormat.Enabled = True
+    btnSetinactiveExclusion.Enabled = True
+    btnAutoProcess.Enabled = True
+
+End Sub
+
+'Procedure to disable all buttons without any check
+'Called before any import/export process, to avoid any user missclick while the interface seems "frozen"
+Private Sub Block_Buttons()
+
+    PnlOptFormatSIXCSV.Enabled = False
+    btnImportSixInstruments.Enabled = False
+    btnImportSixOptions.Enabled = False
+    btnImportSixStructured.Enabled = False
+    btnExportToXML.Enabled = False
+    chkEUUS.Enabled = False
+    chkEUUSCMIC.Enabled = False
+    chkEUUSISIN.Enabled = False
+    chkUK.Enabled = False
+    chkSplitUSPP.Enabled = False
+    chkUSPP.Enabled = False
+    chkExportInactiveISIN.Enabled = False
+    btnReset.Enabled = False
+    btnSetFilterIsinUSPP.Enabled = False
+    btnOriginalUSPPFilter.Enabled = False
+    btnMajApplicationDates.Enabled = False
+    btnFlushAllApplicationDates.Enabled = False
+    btnUSPPFilterHelp.Enabled = False
+    PnlOptDateFormat.Enabled = False
+    btnAutoProcess.Enabled = False
+    btnSetinactiveExclusion.Enabled = False
+
+
+End Sub
+
+'Procedure to initialize the whole Dashboard form to its original display parameters
+Private Sub Init_All()
+    Form_Dashboard.Caption = "ISIN SIX Converter " & GetSixConverterVersion
+    'Reinit buttons (enable/disable buttons accordingly to the status of diverse file imports) with homemade procedure
+    Init_Buttons
+
+    'Refresh all the texts displayed for all loaded file
+    RefreshAllLabels
+
+    'Reinit the progress bar precentage
+    ProgressBar.Value = 0
+    Form_Dashboard.Etiquette79.Caption = "%"
+    lblProgressStep.Caption = ""
+    lblAutoImport.Caption = ""
+    chkExportInactiveISIN.Enabled = True
+
+
+
+End Sub
+
+'Actions performed when clicking on then import/update of the Application Dates button
+Private Sub btnMajApplicationDates_Click()
+
+    'Blocking whole interface
+    Block_Buttons
+
+    'Launching homemade (Core) import method depending on which lists checkboxes are checked
+    If chkEUUS.Value And chkEUUSCMIC.Value Then
+
+        importReglissFile 0
+
+    End If
+
+    If chkEUUS.Value And chkEUUSISIN.Value Then
+
+        importReglissFile 1
+
+    End If
+
+    If chkUK.Value Then
+
+        importReglissFile 2
+
+    End If
+
+    If chkUSPP.Value Then
+
+        importReglissFile 3
+
+    End If
+
+    'Re-enabling interface
+    Init_Buttons False
+
+End Sub
+
+'Actions performed when clicking on the Reset USPP filter button
+Private Sub btnOriginalUSPPFilter_Click()
+
+    'Asking if Application Dates should really be reset, and if answer is yes...
+    If MsgBox("Êtes-vous sûr(e) de vouloir réinitialiser les paramètres du filtre USPP ISIN à ses valeurs originales (TARGET = 'RUSSIA_DOMICILED', etc...) ?" & vbCrLf & vbCrLf & "Tout autre paramètre créé et toute modification apportée sera effacée et seul le filtre original restera.", vbQuestion + vbYesNo, "Réinitialisation filtres USPP ?") = vbYes Then
+
+        '... flushing current filter and reinsterting original one using homemade (Core) method
+        Block_Buttons
+        ResetToOriginalUSPPFilter
+        Init_Buttons
+
+    Else '... if no...
+
+        '... informing no change has been performed
+        MsgBox "Le filtre USPP ISIN n'a pas été réinitialisé.", vbInformation + vbOKOnly, "Filtre USPP non réinitialisé"
+
+    End If
+End Sub
+
+'Actions performed when cliking the Reset button
+Private Sub btnReset_Click()
+
+    'Block all buttons
+    Block_Buttons
+
+    'Flush all the SIX data from the database with homemade (Core) procedure
+    If MsgBox("Voulez-vous vraiment vider tous les fichiers SIX chargés ?", vbQuestion + vbYesNo, "Vider fichiers SIX ?") = vbYes Then
+
+        FlushAll
+        MsgBox "Les fichiers SIX chargés ont bien été retirés.", vbInformation, "Fichiers SIX retirés"
+
+    End If
+
+    'Initialize Dashboard display
+    Init_All
+
+End Sub
+
+'Actions performed when cliking the Reset ISIN USPP filter button
+Private Sub btnSetFilterIsinUSPP_Click()
+
+    'Defining 2 String constants to improve the code readability
+    Const sTableName As String = "USPP_ISIN_SELECT_PARAMETERS"
+    Const sDisclaimer As String = "Le filtre US PERSONS PROHIBITION ISIN sert à déterminer si des ISIN des fichiers SIX sont à mettre dans cette liste spécifique." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Si aucun paramètre de filtre n'est présent, aucun ""split"" ne sera proposé par l'outil. Par conséquent, la table des paramètres de filtre ne devrait JAMAIS être vide/vidée SAUF dans le cas où effectivement, aucun ""split"" n'est attendu." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Un filtre mal défini/paramétré peut donner des résultats inattendus, voire faire planter l'outil !" & vbCrLf & _
+                                  vbCrLf & _
+                                  "Des notions de SQL sont fortement recommandées pour bien renseigner ces paramètres (notamment isin_sql_pattern)." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Tous les champs de la table doivent être renseignés. Si vous ne voulez pas renseigner l'un des champs, veuillez mettre un espace vide." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Pour toutes ces raisons, veuillez faire très attention lorsque vous manipulez le filtre USPP ISIN !" & vbCrLf & _
+                                  vbCrLf & _
+                                  "Merci"
+
+    'Showing a warning/disclaimer about the risks implied with the edition of the USPP ISIN filter
+    MsgBox sDisclaimer, vbExclamation + vbOKOnly, "Avertissement sur le filtre US PERSONS PROHIBITION ISIN !"
+
+    'Opening the content of the table containing the USPP filter parameters with editing possiblities
+    If SysCmd(acSysCmdGetObjectState, acTable, sTableName) = 0 Then
+
+        DoCmd.OpenTable sTableName, acViewNormal, acEdit
+
+    Else
+
+        DoCmd.SelectObject acTable, sTableName
+
+    End If
+End Sub
+
+Private Sub btnSetinactiveExclusion_Click()
+'Defining 2 String constants to improve the code readability
+    Const sTableName As String = "ISIN_INACTIF_EXCLUSION_LIST"
+
+
+    Const sDisclaimer As String = " La table  des ISIN inactifs permet de référencer les ISIN  que vous souhaitez temporairement exclure du traitement actif ." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Cette table répond à un besoin métier exprimé par GFS US , qui souhaite pouvoir récupérer et suivre les ISIN désactivés, même temporairement ." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Attention!!!:Les ISIN présents dans cette liste ne seront pas pris en compte par les filtres ,des splites et des fichiers d'export ." & vbCrLf & _
+                                  vbCrLf & _
+                                  " Il est de votre responsabilité de remettre à jour cette liste si la situation de l'ISIN évolue." & vbCrLf & _
+                                  vbCrLf & _
+                                  "Merci de manipuler cette table avec précaution afin d'éviter toute exclusion involontaire ."
+    'Showing a warning/disclaimer about the risks implied with the edition of the USPP ISIN filter
+    MsgBox sDisclaimer, vbExclamation + vbOKOnly, "Avertissement sur le filtre d'exclusion des ISIN inactifs !"
+
+    'Opening the content of the table containing the USPP filter parameters with editing possiblities
+    If SysCmd(acSysCmdGetObjectState, acTable, sTableName) = 0 Then
+
+        DoCmd.OpenTable sTableName, acViewNormal, acEdit
+
+    Else
+
+        DoCmd.SelectObject acTable, sTableName
+
+    End If
+End Sub
+
+Private Sub btnUSPPFilterHelp_Click()
+
+    Block_Buttons
+
+    openUSPPFilterHelpDoc
+
+    Init_Buttons False
+
+End Sub
+
+'Action performed when clicking on the checkbox for EU/US perimeter (contains 2 possible lists)
+Private Sub chkEUUS_Click()
+
+    'Enable/disable checkbox for both EU/US lists
+    chkEUUSCMIC.Enabled = (chkEUUS.Value And chkEUUS.Enabled)
+    chkEUUSISIN.Enabled = (chkEUUS.Value And chkEUUS.Enabled)
+
+End Sub
+
+'Action performed when clicking on the checkbox for EU/US CMIC list
+Private Sub chkEUUSCMIC_Click()
+
+    'Enable/disable btnMajApplicationDates
+    activateBtnMajApplicationDates
+
+End Sub
+
+'Action performed when clicking on the checkbox for EU/US ISIN list
+Private Sub chkEUUSISIN_Click()
+
+    'Enable/disable btnMajApplicationDates
+    activateBtnMajApplicationDates
+
+End Sub
+
+Private Sub chkExportInactiveISIN_Click()
+
+    'If chkExportInactiveISIN.Value = True Then
+    '    chkExportInactiveISIN.Value = False
+    'ElseIf chkExportInactiveISIN.Value = False Then
+    '    chkExportInactiveISIN.Value = True
+    'End If
+
+End Sub
+
+Private Sub chkExportInactive_Click()
+
+End Sub
+
+'Action performed when clicking on the checkbox for splitting USPP - EU/US ISIN
+Private Sub chkSplitUSPP_Click()
+
+    'Enable/disable and check/uncheck checkbox for USPP list
+    chkUSPP.Enabled = (chkSplitUSPP.Value And chkSplitUSPP.Enabled)
+    chkUSPP.Value = (chkSplitUSPP.Value And chkSplitUSPP.Enabled)
+
+End Sub
+
+'Action performed when clicking on the checkbox for UK list
+Private Sub chkUK_Click()
+
+    'Enable/disable btnMajApplicationDates
+    activateBtnMajApplicationDates
+
+End Sub
+
+'Action performed when clicking on the checkbox for US PERSONS PROHIBITION list
+Private Sub chkUSPP_Click()
+
+    'Enable/disable btnMajApplicationDates
+    activateBtnMajApplicationDates
+
+End Sub
+
+'Method to enable/disable btnMajApplicationDates
+Private Sub activateBtnMajApplicationDates()
+
+    'Button is enabled only if all 3 main checkboxes are enabled (meaning XML could be exported) and at least 1 of the 4 possible lists checkboxes is checked
+    btnMajApplicationDates.Enabled = ((chkEUUS.Enabled And chkUK.Enabled And chkUSPP.Enabled) And (chkEUUSISIN.Value Or chkEUUSCMIC.Value Or chkUK.Value Or chkUSPP.Value))
+
+End Sub
+
+Private Sub btnAutoProcess_Click()
+
+    Dim sInstrumentFile, sStructureFile, sApplicationDateFileCMIC, sApplicationDateFileUSPP, sApplicationDateFileUK, sApplicationDateFileISIN, sGenerationOuputFolderv, sTimerMsg, sMsbBoxPromt As String
+    Dim lStartTickCount, lStopTickCount, lTimerValue As Long
+
+    lblAutoImport.Caption = "Selected file : "
+
+    'Blocking whole interface
+    Block_Buttons
+
+    'msbox yes/no for purge data
+    sMsbBoxPromt = "Do you want to purge already imported data if any is present ?"
+    Select Case MsgBox(sMsbBoxPromt, vbYesNo, "Purge ISIN and Dates")
+        Case vbYes
+            FlushAll
+            FlushISINHistoApplicationDate
+        Case vbNo
+            'Noting
+    End Select
+
+    sInstrumentFile = selectAFile("Instrument File", "SIX Instruments File", "GSM_1_202_EU-RU-UK-US_INSTR_FULL_*.csv")
+    If sInstrumentFile = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+    sStructureFile = selectAFile("Structure File", "SIX Structured File", "GSM_1_202_EU-RU-UK-US_STRUCT_FULL_*.csv")
+    If sStructureFile = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+    sApplicationDateFileCMIC = selectAFile("Application Date File for CMIC", "Application Date File", "list_generic_GC-USA-NS-CMIC-SIX.951.*.csv")
+    If sApplicationDateFileCMIC = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+    sApplicationDateFileISIN = selectAFile("Application Date File for ISIN EU/US", "Application Date File", "list_generic_GC-ISIN-SIX.952.*.csv")
+    If sApplicationDateFileISIN = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+    sApplicationDateFileUK = selectAFile("Application Date File for ISIN UK", "Application Date File", "list_generic_UK-ISIN-SIX.225.*.csv")
+    If sApplicationDateFileUK = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+    sApplicationDateFileUSPP = selectAFile("Application Date File for USPP", "Application Date File", "list_generic_GC-ISIN-SIX-USPP.235.*.csv")
+    If sApplicationDateFileUSPP = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+    sGenerationOuputFolder = selectAFolder("Output Folder")
+    If sGenerationOuputFolder = "User cancelled" Then
+        MsgBox "Operation is now cancelled", vbOKOnly, "Cancelled"
+        Init_All
+        Exit Sub
+    End If
+
+    'msgbox confirm with list of file to process
+    sMsbBoxPromt = "Please confirm the following files to be imported :" & vbCrLf & vbCrLf & _
+                   " Six Files : " & vbCrLf & _
+                   " -- " & GetFilenameFromPath(sInstrumentFile) & vbCrLf & _
+                   " -- " & GetFilenameFromPath(sStructureFile) & vbCrLf & vbCrLf & _
+                   " Application date files : " & vbCrLf & _
+                   " -- " & GetFilenameFromPath(sApplicationDateFileCMIC) & vbCrLf & _
+                   " -- " & GetFilenameFromPath(sApplicationDateFileISIN) & vbCrLf & _
+                   " -- " & GetFilenameFromPath(sApplicationDateFileUK) & vbCrLf & _
+                   " -- " & GetFilenameFromPath(sApplicationDateFileUSPP) & vbCrLf & vbCrLf & _
+                   " Output folder : " & vbCrLf & _
+                   " -- " & sGenerationOuputFolder & vbCrLf
+    Select Case MsgBox(sMsbBoxPromt, vbYesNo, "Confirmation required")
+        Case vbYes
+            'nothing
+        Case vbNo
+            MsgBox "Cancelling operation", vbOKOnly, "Cancelled"
+            Init_All
+            Exit Sub
+    End Select
+
+    If DebugStatus Then Debug.Print "Selected file : " & sInstrumentFile
+    If DebugStatus Then Debug.Print "Selected file : " & sStructureFile
+    If DebugStatus Then Debug.Print "Selected file : " & sApplicationDateFileISIN
+    If DebugStatus Then Debug.Print "Selected file : " & sApplicationDateFileUK
+    If DebugStatus Then Debug.Print "Selected file : " & sApplicationDateFileCMIC
+    If DebugStatus Then Debug.Print "Selected file : " & sApplicationDateFileUSPP
+
+    lStartTickCount = GetTickCount
+    lblAutoImport.FontSize = 8
+    lblAutoImport.Caption = "Selected Dates files : " & vbCrLf & _
+                            " Dates EU/US : " & GetFilenameFromPath(sApplicationDateFileISIN) & vbCrLf & _
+                            " Dates UK : " & GetFilenameFromPath(sApplicationDateFileUK) & vbCrLf & _
+                            " Dates CMIC : " & GetFilenameFromPath(sApplicationDateFileCMIC) & vbCrLf & _
+                            " Dates USPP : " & GetFilenameFromPath(sApplicationDateFileUSPP) & vbCrLf & _
+                            "Output Folder :" & vbCrLf & "  " & sGenerationOuputFolder
+
+    lblProgressStep.FontSize = 10
+
+    lblProgressStep.Caption = "Importing SIX Instrument : " & vbCrLf & "   - " & GetFilenameFromPath(sInstrumentFile)
+    'Launch ad hoc homemade (Core) procedure to import a Six file. Param 0 --> Instruments file + Option Panel Value for file nb version (Old or New CSV format)
+    bFileImported = AutoImportSixFile(0, PnlOptFormatSIXCSV.Value, sInstrumentFile)
+
+    bIsUnwantedInstruRemoved = False
+
+    'Refresh the text displayed for the SIX Instruments loaded file
+    RefreshSixInstrumentsLabel
+
+    'Check if an Instruments file has been loaded...
+    If CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM CURRENTLY_LOADED_FILES WHERE six_instruments_file IS NOT NULL")!CountRows > 0 Then
+
+        If Not bIsUnwantedInstruRemoved Then
+
+            lblProgressStep.Caption = "Importing SIX Structured : " & vbCrLf & "   - " & GetFilenameFromPath(sStructureFile)
+            'Launch ad hoc homemade (Core) procedure to import a Six file. Param 1 --> Options file + Option Panel Value for file nb version (Old or New CSV format)
+            bFileImported = AutoImportSixFile(2, PnlOptFormatSIXCSV.Value, sStructureFile)
+
+            'Refresh the text displayed for the SIX Options loaded file
+            RefreshSixStructuredLabel
+
+        Else
+
+            '... display a warning message accordingly and do nothing
+            MsgBox "Un export XML a déjà eu lieu et a tronqué une partie des informations référentielles du fichier ""Instruments"" actuellement chargé (processus normal)." & vbCrLf & "Le fichier ""Options"" a besoin de l'intégralité des données provenant du fichier ""Instruments"" pour être correctement importé.", vbExclamation + vbOKOnly, "Fichier ""Instruments"" partiellement tronqué suite à Export"
+
+        End If
+
+    Else 'if no Instruments file has been previously loaded...
+
+        '... display a warning message accordingly and do nothing
+        MsgBox "Aucun fichier ""Instruments"" n'a été chargé." & vbCrLf & "Le fichier ""Options"" a besoin du fichier ""Instruments"" pour être correctement importé.", vbExclamation + vbOKOnly, "Fichier ""Instruments"" manquant"
+
+    End If
+
+    Init_Buttons
+    Block_Buttons
+
+
+    'Launching homemade (Core) import method depending on which lists checkboxes are checked
+    If chkEUUS.Value And chkEUUSCMIC.Value Then
+        lblProgressStep.Caption = "Importing CMIC Dates : " & vbCrLf & "   - " & GetFilenameFromPath(sApplicationDateFileCMIC)
+        AutoImportReglissFile 0, sApplicationDateFileCMIC
+
+    End If
+
+
+    If chkEUUS.Value And chkEUUSISIN.Value Then
+        lblProgressStep.Caption = "Importing EU/US Dates : " & vbCrLf & "   - " & GetFilenameFromPath(sApplicationDateFileISIN)
+        AutoImportReglissFile 1, sApplicationDateFileISIN
+
+    End If
+    Init_Buttons
+    If chkUK.Value Then
+        lblProgressStep.Caption = "Importing UK Dates : " & vbCrLf & "   - " & GetFilenameFromPath(sApplicationDateFileUK)
+        AutoImportReglissFile 2, sApplicationDateFileUK
+
+    End If
+
+    If chkUSPP.Value Then
+        lblProgressStep.Caption = "Importing USPP Dates : " & vbCrLf & "   - " & GetFilenameFromPath(sApplicationDateFileUSPP)
+        AutoImportReglissFile 3, sApplicationDateFileUSPP
+
+    End If
+
+    'Generating files
+    lblProgressStep.Caption = "Exporting File : "
+    Dim sFileSaveDirectory, sFilesSavedList, sExportResult As String
+
+    If (chkEUUS.Value And (chkEUUSCMIC.Value Or chkEUUSISIN.Value)) Or chkUK.Value Or chkUSPP.Value Then
+
+        'If unwated Instruments have not yes been removed...
+        If Not bIsUnwantedInstruRemoved Then
+
+            '...calling the homemade procedure which ultimately removes the unwanted Instruments that were kept for proper integration of the Options/Structured data
+            RemoveUnwantedInstruments
+            bIsUnwantedInstruRemoved = True
+
+        End If
+
+        'Calling the filler for ISIN PROGRAMS table now that only the ISIN we want are present in the main table
+        FillIsinPrograms
+
+            '... save the path
+            sFileSaveDirectory = sGenerationOuputFolder
+            sFilesSavedList = vbNullString
+            lblProgressStep.Caption = "Exporting Files to : " & vbCrLf & "   - " & sFileSaveDirectory
+
+            If chkEUUS.Value Then
+
+                If chkEUUSCMIC.Value Then
+                lblProgressStep.Caption = "Exporting CMIC File"
+                    '... Save the file (using the homemade ExportXML function) and catching filename
+
+                    sExportResult = ExportXML(0, sFileSaveDirectory, 1)
+
+                    If Not sExportResult Like "ERR_*" Then
+
+                        sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                    End If
+                End If
+
+                If chkEUUSISIN.Value Then
+                    lblProgressStep.Caption = "Exporting EU/US File"
+                    sExportResult = ExportXML(1, sFileSaveDirectory, 1)
+
+                    If Not sExportResult Like "ERR_*" Then
+
+                        '... Save the file (using the homemade ExportXML function) and catching filename
+                        sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                    End If
+                End If
+
+            End If
+
+            If chkUK.Value Then
+                lblProgressStep.Caption = "Exporting UK File"
+                sExportResult = ExportXML(1, sFileSaveDirectory, 2)
+
+                If Not sExportResult Like "ERR_*" Then
+
+                    '... Save the file (using the homemade ExportXML function) and catching filename
+                    sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                End If
+            End If
+
+            If chkUSPP.Value Then
+                lblProgressStep.Caption = "Exporting USPP File"
+                sExportResult = ExportXML(1, sFileSaveDirectory, 3)
+
+                If Not sExportResult Like "ERR_*" Then
+
+                    '... Save the file (using the homemade ExportXML function) and catching filename
+                    sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                End If
+            End If
+
+            If sFilesSavedList <> vbNullString Then
+
+                'MsgBox "Le(s) fichier(s) XML :" & vbCrLf & sFilesSavedList & vbCrLf & vbCrLf & "a/ont bien été enregistré(s).", vbInformation + vbOKOnly, "Fichier(s) XML bien exporté(s)"
+                Debug.Print "Le(s) fichier(s) XML :" & vbCrLf & sFilesSavedList & vbCrLf & vbCrLf & "a/ont bien été enregistré(s)."
+                lStopTickCount = GetTickCount
+
+                lTimerValue = ((lStopTickCount - lStartTickCount) + Abs((lStopTickCount < lStartTickCount) * 86400)) / 1000
+                Select Case lTimerValue
+                    Case Is < 1
+                        sTimerMsg = Format(lTimerValue, "0.000 \m\s")
+                    Case 1 To 59
+                        sTimerMsg = Format(Int(lTimerValue), "0 \s") 'this one rounds down
+                        'mssg = mssg & Format(timerTimeValue\1, "0 \s") this one rounds it off up or down
+                    Case 60 To 3599
+                        sTimerMsg = Format(Int(lTimerValue / 60), "0 \m\, ") & Format(lTimerValue Mod 60, "0 \s")
+                    Case Is >= 3600
+                        sTimerMsg = Format(Int(lTimerValue / 3600), "0 \h\, ") & Format(Int((lTimerValue Mod 3600) / 60), "0 \m\, ") & Format(lTimerValue Mod 60, "0 \s")
+                    Case Else
+                        'do nothing
+                End Select
+
+                lblProgressStep.Caption = "Total Time to process : " & vbCrLf & "   - " & sTimerMsg
+
+            Else
+
+                MsgBox "Aucun fichier XML n'a été enregistré.", vbExclamation + vbOKOnly, "Aucun fichier XML exporté"
+
+            End If
+        Else 'if no folder was selected...
+
+            '... display a warning message accordingly
+            MsgBox "Aucun répertoire choisi. Aucun fichier XML n'a été exporté.", vbExclamation + vbOKOnly, "Pas de répertoire choisi"
+
+        End If
+
+    lblProgressStep.Caption = "Total Time to process : " & vbCrLf & "   - " & sTimerMsg
+    'Re-enabling interface
+    Init_Buttons False
+
+End Sub
+
+'Actions taken when closing the Dashboard form (hence, when quitting Access/closing the Access file too)
+Private Sub Form_Close()
+
+    'Flush all the SIX data from the database with homemade (Core) procedure
+    If CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM SIX_ISIN")!CountRows > 0 Then
+
+        If MsgBox("Voulez-vous conservez les données SIX Financial déjà chargées ?", vbQuestion + vbYesNo, "Conserver données SIX Financial ?") = vbNo Then
+
+            FlushAll
+
+        Else
+
+            FlushTempDocsFromHDD
+
+        End If
+    Else
+
+        FlushTempDocsFromHDD
+
+    End If
+
+    'If some Application Dates have been loaded...
+    If CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM ISIN_HISTO_APPLICATION_DATE")!CountRows > 0 Then
+
+        '... asking if they should be kept...
+        If MsgBox("Voulez-vous conserver les Application Dates déjà chargées ?", vbQuestion + vbYesNo, "Conserver Application Dates ?") = vbNo Then
+
+            '... if no, then flush them with homemade (Core) procedure
+            FlushISINHistoApplicationDate
+
+        End If
+    End If
+End Sub
+
+'Actions taken when opening the Dashboard form (hence, when opening the Acces file too)
+Private Sub Form_Open(Cancel As Integer)
+
+    'Initialize Dashboard display
+    Init_All
+
+End Sub
+
+
