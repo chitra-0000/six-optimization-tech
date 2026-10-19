@@ -1,0 +1,506 @@
+'Generic_Functions module contains generic public functions that may be used anywhere in the tool code
+Option Compare Database
+
+' Returns the rightmost characters of a string upto but not including the rightmost '\'
+' e.g. 'c:\winnt\win.ini' returns 'win.ini'
+Public Function GetFilenameFromPath(ByVal strPath As String) As String
+
+    Dim fso As New FileSystemObject
+
+    GetFilenameFromPath = fso.GetFileName(strPath)
+
+End Function
+
+' Returns the provided string without any latin accentuated character
+Public Function RemoveAccents(ByVal sChaine As String) As String
+
+    Dim sListeAccentuee, sListeNonAccentuee As String
+    Dim iCntChar, iPosChar As Integer
+
+    'TODO verify: accented character lists were too small to read character by character in the photo
+    sListeAccentuee = "ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝàáâãäåçèéêëìíîïñòóôõöøùúûüýÿ"
+    sListeNonAccentuee = "AAAAAACEEEEIIIINOOOOOOUUUUYaaaaaaceeeeiiiinoooooouuuuyy"
+
+    sChaine = Replace(Replace(Replace(Replace(sChaine, "œ", "oe"), "Œ", "OE"), "æ", "ae"), "Æ", "AE")
+
+    For iCntChar = 1 To Len(sChaine)
+
+        iPosChar = InStr(1, sListeAccentuee, Mid(sChaine, iCntChar, 1), 0)
+
+        If iPosChar Then
+
+            Mid(sChaine, iCntChar, 1) = Mid(sListeNonAccentuee, iPosChar, 1)
+
+        End If
+    Next iCntChar
+
+    RemoveAccents = sChaine
+
+End Function
+
+' Returns the provided string without any unwanted punctuation character. Each unwanted character is replaced by a valid one. List is as follows :
+' ’ --> '
+' ‘ --> '
+' " --> nothing
+' “ --> nothing
+' ” --> nothing
+' . --> nothing
+' , --> nothing
+' ; --> nothing
+' : --> nothing
+Public Function ReplacePunctuation(ByVal sChaine As String) As String
+
+    'TODO verify: typographic quote characters are hard to distinguish in the photo
+    ReplacePunctuation = Replace(Replace(Replace(Replace(Replace(Replace(Replace(Replace(Replace(sChaine, "’", "'"), "‘", "'"), """", vbNullString), "“", vbNullString), "”", vbNullString), ".", vbNullString), ",", vbNullString), ";", vbNullString), ":", vbNullString)
+
+End Function
+
+' Returns the provided string date without any separation symbol. Possible symbols are as follows :
+' /
+' -
+' .
+Public Function RemoveInDateSymbols(ByVal sStringDate As String) As String
+
+    RemoveInDateSymbols = Replace(Replace(Replace(sStringDate, "/", vbNullString), "-", vbNullString), ".", vbNullString)
+
+End Function
+
+' Returns the 1st position of the provided separation symbol in the provided string date
+Public Function GetFirstSymbolIdx(ByVal sStringDate As String, ByVal sSymbol As String) As Integer
+
+    GetFirstSymbolIdx = InStr(1, sStringDate, sSymbol)
+
+End Function
+
+' Returns the last position of the provided separation symbol in the provided string date
+Public Function GetLastSymbolIdx(ByVal sStringDate As String, ByVal sSymbol As String) As Integer
+
+    GetLastSymbolIdx = InStrRev(sStringDate, sSymbol)
+
+End Function
+
+' Returns the smallest date out of the 2 provided dates
+Public Function GetMinDate(ByVal dMyDate1 As Date, ByVal dMyDate2 As Date) As Date
+
+    GetMinDate = IIf(dMyDate1 < dMyDate2, dMyDate1, dMyDate2)
+
+End Function
+
+' Returns the biggest date out of the 2 provided dates
+Public Function GetMaxDate(ByVal dMyDate1 As Date, ByVal dMyDate2 As Date) As Date
+
+    GetMinDate = IIf(dMyDate1 > dMyDate2, dMyDate1, dMyDate2)
+
+End Function
+
+' Returns the "most probably wanted date" out of the two dates provided.
+' Rule : the date should be the smallest one, unless it is before/smaller than the 1st January 2000, then it's the other one that is expected
+Public Function GetMostProbableDate(ByVal sMyDate1 As Date, ByVal sMyDate2 As Date) As Date
+
+    Const dMinDate As Date = GetMinDate(sMyDate1, sMyDate2)
+
+    GetMostProbableDate = IIf(dMinDate < DateSerial(2000, 1, 1), GetMaxDate(sMyDate1, sMyDate2), dMinDate)
+
+End Function
+
+' Returns the provided multi-columns string without any "in-column" semi-colon, but keeping the semi-colons as separation symbols
+Public Function RemoveInValueSemiColon(ByVal sChaine As String) As String
+
+    Dim rRe As RegExp
+    Dim oAllMatches As Object
+    Dim vSousChaine As Variant
+    Dim sSousChaineCorrige As Variant
+
+    Set rRe = New RegExp
+    rRe.Global = True
+    rRe.IgnoreCase = True
+    rRe.Multiline = False
+
+    rRe.Pattern = ";""([^""]*)"";"
+
+    If rRe.test(sChaine) Then
+
+        Set oAllMatches = rRe.Execute(sChaine)
+
+        For Each vSousChaine In oAllMatches
+
+            vSousChaine = Mid(vSousChaine, 2, Len(vSousChaine) - 2)
+            sSousChaineCorrige = Replace(vSousChaine, ";", "|")
+            sChaine = Replace(sChaine, vSousChaine, sSousChaineCorrige)
+
+        Next
+
+        sChaine = Replace(sChaine, """", vbNullString)
+
+    End If
+
+    RemoveInValueSemiColon = sChaine
+
+End Function
+
+' Returns the provided string with surrounding double-quotes if the string is not null, or the unquoted text value "NULL" if the string is null
+Public Function QuotesIfNotNull(ByVal sMyString As String) As String
+
+    sMyString = IIf(sMyString = vbNullString, "NULL", sMyString)
+    QuotesIfNotNull = IIf(sMyString <> "NULL", "'" & sMyString & "'", sMyString)
+
+End Function
+
+'Ascending (alphabetical) sort of a 1-dimensional array
+Sub AscendingSort(myArray)
+    Num = UBound(myArray)
+    tempArray = myArray
+    Erase myArray
+    For i = 0 To Num
+        Position = 0
+        For l = 0 To Num
+            If LCase(tempArray(i)) > LCase(tempArray(l)) And i <> l Then
+                Position = Position + 1
+            End If
+        Next
+        For j = 1 To 1
+            If myArray(Position) = "" Then
+                myArray(Position) = tempArray(i)
+            Else
+                Position = Position + 1
+                j = j - 1
+            End If
+        Next
+    Next
+End Sub
+Sub AscendingSort_Alpha(myArray)
+    Dim arr As Object
+    Dim InputArray
+
+    'Creating a array list
+    Set arr = CreateObject("System.Collections.ArrayList")
+
+    ' adding the elements in the array to array_list
+    For Each element In myArray
+        arr.Add element
+    Next
+
+    'sorting happens
+    arr.Sort
+
+    'Converting ArrayList to an array
+    'so now a sorted array of elements is stored in the array sorted_array.
+
+    myArray = arr.toarray
+End Sub
+' Returns the provided date string to a proper Date object, analyzing its format to make the proper choices
+Public Function FormatDateStringToProperDate(ByVal sMyString As String, Optional ByVal bIsFromSix As Boolean = False) As Date
+
+    Dim sDateStringNoSymbols As String
+    Dim iFirstDash, iFirstSlash, iFirstDot, iLastDash, iLastSlash, iLastDot As Integer
+    Dim bIsAmericanFormat, bIsFrenchFormat, bHasProperAmericanSymbols, bHasProperFrenchSymbols, bHasNoSymbols As Boolean
+    Const iProperAmericanFirstSymbol As Integer = 5
+    Const iProperAmericanLastSymbol As Integer = 8
+    Const iProperFrenchFirstSymbol As Integer = 3
+    Const iProperFrenchLastSymbol As Integer = 6
+
+    FormatDateStringToProperDate = vbNull
+
+    iFirstDash = GetFirstSymbolIdx(sMyString, "-")
+    iLastDash = GetLastSymbolIdx(sMyString, "-")
+
+    iFirstSlash = GetFirstSymbolIdx(sMyString, "/")
+    iLastSlash = GetLastSymbolIdx(sMyString, "/")
+
+    iFirstDot = GetFirstSymbolIdx(sMyString, ".")
+    iLastDot = GetLastSymbolIdx(sMyString, ".")
+
+    bHasProperAmericanSymbols = ((iFirstDash = iProperAmericanFirstSymbol And iLastDash = iProperAmericanLastSymbol) _
+                                Or (iFirstSlash = iProperAmericanFirstSymbol And iLastSlash = iProperAmericanLastSymbol) _
+                                Or (iFirstDot = iProperAmericanFirstSymbol And iLastDot = iProperAmericanLastSymbol))
+
+    bHasProperFrenchSymbols = ((iFirstDash = iProperFrenchFirstSymbol And iLastDash = iProperFrenchLastSymbol) _
+                              Or (iFirstSlash = iProperFrenchFirstSymbol And iLastSlash = iProperFrenchLastSymbol) _
+                              Or (iFirstDot = iProperFrenchFirstSymbol And iLastDot = iProperFrenchLastSymbol))
+
+    bHasNoSymbols = (iFirstDash = 0 And iLastDash = 0 And iFirstSlash = 0 And iLastSlash = 0 And iFirstDot = 0 And iLastDot = 0)
+
+    sDateStringNoSymbols = RemoveInDateSymbols(sMyString)
+
+    If Len(sDateStringNoSymbols) = 8 Then
+
+        bIsAmericanFormat = ((IsDate(Right(sDateStringNoSymbols, 2) & "/" & Mid(sDateStringNoSymbols, 5, 2) & "/" & Left(sDateStringNoSymbols, 4)) And (bHasNoSymbols Or bHasProperAmericanSymbols)) Or bIsFromSix)
+        bIsFrenchFormat = ((IsDate(Left(sDateStringNoSymbols, 2) & "/" & Mid(sDateStringNoSymbols, 3, 2) & "/" & Right(sDateStringNoSymbols, 4)) And (bHasNoSymbols Or bHasProperFrenchSymbols)) And Not bIsFromSix)
+
+        If bIsAmericanFormat And Not bIsFrenchFormat Then
+
+            FormatDateStringToProperDate = DateSerial(CInt(Left(sDateStringNoSymbols, 4)), CInt(Mid(sDateStringNoSymbols, 5, 2)), CInt(Right(sDateStringNoSymbols, 2)))
+
+        ElseIf bIsFrenchFormat And Not bIsAmericanFormat Then
+
+            FormatDateStringToProperDate = DateSerial(CInt(Right(sDateStringNoSymbols, 4)), CInt(Mid(sDateStringNoSymbols, 3, 2)), CInt(Left(sDateStringNoSymbols, 2)))
+
+        ElseIf bIsAmericanFormat And bIsFrenchFormat Then
+
+            FormatDateStringToProperDate = GetMostProbableDate(DateSerial(CInt(Left(sDateStringNoSymbols, 4)), CInt(Mid(sDateStringNoSymbols, 5, 2)), CInt(Right(sDateStringNoSymbols, 2))), DateSerial(CInt(Right(sDateStringNoSymbols, 4)), CInt(Mid(sDateStringNoSymbols, 3, 2)), CInt(Left(sDateStringNoSymbols, 2))))
+
+        End If
+    End If
+End Function
+
+' Returns the provided date (as date object) to a properly formatted string date for Access SQL insert
+' The Access SQL date format is the same as the XML format (hence the use of the XML formatting function, see below) but enclosed between hashtags
+Public Function FormatDateToProperStringDateSQL(ByVal dMyDate As Date) As String
+
+    FormatDateToProperStringDateSQL = IIf(dMyDate <> vbNull, "#" & FormatDateToProperStringDate(dMyDate) & "#", "NULL")
+
+End Function
+
+' Returns the provided date (as date object) to a string properly formatted (default is US with dash : yyyy-mm-dd, alternative is French with slash : dd/mm/yyyy)
+Public Function FormatDateToProperStringDate(ByVal dMyDate As Date, Optional ByVal bUseFrenchFormat As Boolean = False) As String
+
+    FormatDateToProperStringDate = Format(dMyDate, IIf(bUseFrenchFormat, "dd/mm/yyyy", "yyyy-mm-dd"))
+
+End Function
+
+' Returns True if a date is null.
+'Null value isn't a VBA possiblity for a Date object. In fact, any Date object is automatically set to vbNull (= 0 = "00:00:00.0") when defined, so vbNull is the tested value
+Public Function IsDateNull(ByVal dMyDate As Date) As Boolean
+
+    IsDateNull = (dMyDate = vbNull)
+
+End Function
+
+' Returns the provided string with doubled single-quotes (needed for inserts into Access SQL keeping the single-quotes)
+Public Function DoubleInStringQuotes(ByVal sMyString As String) As String
+
+    DoubleInStringQuotes = Replace(sMyString, "'", "''")
+
+End Function
+
+' Returns True if the firstly provided string value is found at least once in the secondly provided string value
+Public Function isin(ByVal vMyValue As Variant, ByVal sMyConcatenatedList As String) As Boolean
+
+    isin = (InStr(1, sMyConcatenatedList, CStr(vMyValue), vbTextCompare) > 0)
+
+End Function
+
+' Closes any still opened SQL query
+Private Sub CloseAllOpenedQueries()
+
+    Dim qry As DAO.QueryDef
+
+    For Each qry In CurrentDb.QueryDefs
+
+        On Error Resume Next
+        DoCmd.Close acQuery, qry.Name, acSavePrompt
+
+    Next
+End Sub
+
+' Returns the database parameter "Version"
+Public Function GetSixConverterVersion() As String
+
+    Dim Property As Variant
+    Dim db As DAO.Database
+
+    Set db = CurrentDb
+
+    For Each Property In db.Containers("Databases").Documents("UserDefined").Properties
+
+        If Property.Name = "Version" Then
+
+            GetSixConverterVersion = Property.Value
+            Exit For
+
+        End If
+    Next
+End Function
+
+' Returns True if the provided file (filename) is already opened by a Microsoft Office application (which is not allowed and makes the tool fail to open it again)
+Public Function IsFileOpen(ByVal sFileName As String, Optional ByVal bByPassPopUp As Boolean = False) As Boolean
+
+    Dim iFileNum, iErrNum As Integer
+
+    'Allow all errors to happen
+    On Error Resume Next
+    iFileNum = FreeFile()
+
+    'Try to open and close the file for input.
+    'Errors mean the file is already open
+    Open sFileName For Input Lock Read As #iFileNum
+    Close iFileNum
+
+    'Get the error number
+    iErrNum = Err
+
+    'Do not allow errors to happen
+    On Error GoTo 0
+
+    'File is open if the caught error = 70
+    If iErrNum = 70 Then
+
+        If Not bByPassPopUp Then
+
+            '... the file is already opened by a Microsoft Office application thus cannot be processed : not eloquent Office runtime error message if tried, so we give an eloquent message instead
+            'Embedding the MsgBox in an Eval function to avoid the new formatting of the Office messages in a MsgBox, which wraps words to soon.
+            'This way, the file name with full path (which could be long) is most likely to be displayed on a single line, maybe 2 at most
+            sMessage = "Le fichier" & vbCrLf & vbCrLf & sFileName & vbCrLf & vbCrLf & "est déjà ouvert par une application Microsoft Office et ne peut être importé tant que c'est le cas." & vbCrLf & vbCrLf & "Veuillez le fermer et recommencer."
+            Eval "MsgBox (""" & sMessage & """, " & vbExclamation & ", ""Fichier déjà ouvert"")"
+
+        End If
+
+        IsFileOpen = True
+
+    End If
+End Function
+
+' Saves (and removes older version if present) the in-database Help file into the user's temp folder if the file isn't already opened
+' + returns the satus of the file / operation done
+Public Function saveTmpFileFromField(ByVal sFileName As String, ByVal foFileContent As Field) As String
+
+    Dim sSaveFilePath As String
+    Dim bFileExists As Boolean
+
+    saveTmpFileFromField = "SAVE_KO"
+
+    sSaveFilePath = getEnvironTempPath & sFileName
+
+    bFileExists = isFileExist(sSaveFilePath)
+
+    If bFileExists Then
+
+        If Not removeExistingFile(sSaveFilePath) Then
+
+            saveTmpFileFromField = "ALREADY_OPENED"
+
+        Else
+
+            bFileExists = False
+
+        End If
+    End If
+
+    If Not bFileExists Then
+
+        On Error Resume Next
+
+        foFileContent.SaveToFile sSaveFilePath
+
+        saveTmpFileFromField = "SAVE_OK"
+
+        On Error GoTo 0
+
+    End If
+End Function
+
+' Removes an existing file from the HDD if not already opened
+' + returns the deletion status
+Public Function removeExistingFile(ByVal sFileName As String) As Boolean
+
+    If Not IsFileOpen(sFileName, True) Then
+
+        VBA.SetAttr sFileName, vbNormal
+        VBA.Kill sFileName
+        removeExistingFile = True
+
+    Else
+
+        removeExistingFile = False
+
+    End If
+End Function
+
+' Returns the environment / user's TEMP path
+Public Function getEnvironTempPath() As String
+
+    getEnvironTempPath = Environ("TEMP")
+    getEnvironTempPath = getEnvironTempPath & IIf(Right(getEnvironTempPath, 1) <> "\", "\", vbNullString)
+
+End Function
+
+' Returns True if the provided file (filename + full path as string) exists
+Public Function isFileExist(ByVal sFileNameFullPath As String) As Boolean
+
+    isFileExist = (Dir(sFileNameFullPath) <> vbNullString)
+
+End Function
+
+Public Function countFileLines(ByVal fName As String) As Long
+
+    countFileLines = CreateObject("Scripting.FileSystemObject").OpenTextFile(fName, 8, True).Line
+End Function
+'sorting fonction for array
+Public Sub QuickSort(vArray As Variant, inLow As Long, inHi As Long)
+  Dim pivot   As Variant
+  Dim tmpSwap As Variant
+  Dim tmpLow  As Long
+  Dim tmpHi   As Long
+
+  tmpLow = inLow
+  tmpHi = inHi
+
+  pivot = vArray((inLow + inHi) \ 2)
+
+  While (tmpLow <= tmpHi)
+     While (vArray(tmpLow) < pivot And tmpLow < inHi)
+        tmpLow = tmpLow + 1
+     Wend
+
+     While (pivot < vArray(tmpHi) And tmpHi > inLow)
+        tmpHi = tmpHi - 1
+     Wend
+
+     If (tmpLow <= tmpHi) Then
+        tmpSwap = vArray(tmpLow)
+        vArray(tmpLow) = vArray(tmpHi)
+        vArray(tmpHi) = tmpSwap
+        tmpLow = tmpLow + 1
+        tmpHi = tmpHi - 1
+     End If
+  Wend
+
+  If (inLow < tmpHi) Then QuickSort vArray, inLow, tmpHi
+  If (tmpLow < inHi) Then QuickSort vArray, tmpLow, inHi
+End Sub
+
+Public Function selectAFile(ByVal fTitle As String, ByVal fFilterName As String, ByVal fFilePattern As String)
+    Dim fDialog As FileDialog, result As Integer
+    Set fDialog = Application.FileDialog(msoFileDialogFilePicker)
+
+    'Optional: FileDialog properties
+    fDialog.AllowMultiSelect = False
+    fDialog.Title = "Select " & fTitle
+    fDialog.InitialFileName = fFilePattern
+    'Optional: Add filters
+    fDialog.Filters.Clear
+    fDialog.Filters.Add fFilterName, "*." & Right(fFilePattern, 3)
+    fDialog.Filters.Add "All files", "*.*"
+
+
+    With fDialog
+      If fDialog.Show Then
+        selectAFile = fDialog.SelectedItems(1)
+      Else
+        selectAFile = "User cancelled"
+      End If
+    End With
+
+    If DebugStatus Then Debug.Print selectAFile
+
+End Function
+
+Public Function selectAFolder(ByVal fTitle As String)
+    Dim fDialog As FileDialog, result As Integer
+    Set fDialog = Application.FileDialog(msoFileDialogFolderPicker)
+
+    fDialog.Title = "Select " & fTitle
+    fDialog.InitialFileName = ""
+
+
+    With fDialog
+      If fDialog.Show Then
+        selectAFolder = fDialog.SelectedItems(1)
+      Else
+        selectAFolder = "User cancelled"
+      End If
+    End With
+
+    If DebugStatus Then Debug.Print selectAFolder
+
+End Function
