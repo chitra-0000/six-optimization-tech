@@ -1,0 +1,3235 @@
+'Release info
+'Release info
+'
+'SIX2ReglissXML_Converter_v3.2.3   :   20/03/2026 -Raphael BOURJOT
+'                                       "REG1" column name changed by "NZ" (AER_EVOLLM-22)
+'SIX2ReglissXML_Converter_v3.2.2   :   29/08/2025 -Fatima Ezzhrae TLIGUI
+'                                       Correction of the "inactive" Filter Condition for the CMIC list . (AER_EVOLLM-3)
+'SIX2ReglissXML_Converter_v3.2.1   :   07/07/2025 -Fatima Ezzhrae TLIGUI
+'                                       Add Isin inactif table  to not  allow to  inactive ISIN to be exported. (AER_EVOLLM-3)
+'SIX2ReglissXML_Converter_v3.2.0   :   13/11/2024 - Christian GAMACHE (462656)
+'                                       Add Actives/Inactives switch to allow inactive ISIN to be exported. (AER_EVOLLM-3)
+'SIX2ReglissXML_Converter_v3.1.8   :   18/10/2024 - Christian GAMACHE (462656)
+'                                       Fix memory leak issue when reordering program on records
+'SIX2ReglissXML_Converter_v3.1.7   :   29/08/2024 - Christian GAMACHE (462656)
+'                                       Fix wrong USPP file displayed in recap "form caption" when autoprocessing is selected
+'SIX2ReglissXML_Converter_v3.1.6   :   --/06/2024 - Christian GAMACHE (462656)
+'                                       Trying to Optimize Import Performance
+'                                       Changing Defaut Null IsinValue [sInstruNullIsinPattern] from AutoIsinXXXX to AtIsinXXXXXX to handle more records with empty Isin number.
+'SIX2ReglissXML_Converter_v3.1.5   :   24/06/2024 - Christian GAMACHE (462656)
+'                                       Fix issue related to "Overflow - Runtime error 6" iCntInstruNullIsin variable swtiched from [Integer] to [Long]
+'SIX2ReglissXML_Converter_v3.1.4   :   11/07/2023 - Christian GAMACHE (462656)
+'                                       Fix issue related to programs order difference between x86 and x64 Access version.
+'                                       From this release and further records "SearchCode" and "Programs" are sorted alphabetically by label.
+'SIX2ReglissXML_Converter_v3.1.3a  :   19/05/2023 - Christian GAMACHE (462656)
+'                                       Update code to support x86 and x64 version of MS Access.
+'SIX2ReglissXML_Converter_v3.1.3   :   09/01/2023 - Virgil DESPOUY (408125)
+'                                       First delivery to L3 ListManagement
+'
+'
+'Core module is the center of the code managing the tool and its database, the import/export files processes, etc...
+Option Compare Database
+
+' 2 API based functions to manage Windows' foreground window
+#If Win64 Then
+    #If VBA7 Then
+        'MsgBox "Win 64 and Office 64" '
+        Private Declare PtrSafe Function SetForegroundWindow Lib "user32" (ByVal hwnd As Long) As Long
+        Private Declare PtrSafe Function FindWindow Lib "user32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+        Public Declare PtrSafe Function GetTickCount Lib "kernel32.dll" () As Long
+    #Else
+        'MsgBox "Win 64 and Office 32" '
+        Private Declare Function SetForegroundWindow Lib "user32" (ByVal hwnd As Long) As Long
+        Private Declare Function FindWindow Lib "user32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+        Public Declare Function GetTickCount Lib "kernel32.dll" () As Long
+    #End If
+#Else
+    'MsgBox "Win 32 and Office 32" '
+    Private Declare Function SetForegroundWindow Lib "user32" (ByVal hwnd As Long) As Long
+    Private Declare Function FindWindow Lib "user32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+    Public Declare Function GetTickCount Lib "kernel32.dll" () As Long
+#End If
+
+'Global (perimeter : module) constants and variables
+Private Const sSixAllFilenamesHeader As String = "GSM_1_202_*_"
+Private Const sSixAllFilenamesDateTimePattern As String = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]"
+Private Const sAllFilenamesExtension As String = ".csv"
+Private Const sAllFilenamesFilter As String = "*" & sAllFilenamesExtension
+Public Const sInstruNullIsinPattern As String = "AtIsin"
+Dim xmlDoc As MSXML2.DOMDocument60
+Dim dSixFileInstruDate As Date
+Dim sSixFileInstruTime As String
+Dim iCntInstruNullIsin As Long
+Const DebugStatus As Boolean = True
+Const DebugfileName As String = "C:\temp\debug.log"
+
+
+'Public procedure to flush SIX data from the database
+'Optional param allows to pinpoint the data from which SIX file should be removed. If omitted, all SIX data is affected
+Public Sub FlushSixIsin(Optional ByVal iSourceFileId As Variant)
+
+    Dim sSQLDelete As String
+
+    'Defining the common part of the DELETE SQL query
+    sSQLDelete = "DELETE FROM SIX_ISIN"
+
+    'If an optional param is provided...
+    If Not IsMissing(iSourceFileId) Then
+
+        '... then the SQL query is amended accordingly to pinpont the data to be deleted
+        sSQLDelete = sSQLDelete & " WHERE rsf_id = " & CStr(iSourceFileId)
+
+    End If
+
+    'Execution of the obtained query
+    CurrentDb.Execute sSQLDelete
+
+End Sub
+
+'Public procedure to remove the information of each source file that has been loaded (tracking system/CURRENTLY_LOADED_FILES table)
+'Mandatory param is an ID referenced in table REF_SOURCE_FILE, to pinpoint which SIX file is to be removed.
+Public Sub FlushSixLoadedFile(ByVal iSourceFileId As Integer)
+
+    Dim sSixFileRefLabel As String
+    Dim rSixFileRef As Recordset
+
+    'Getting the file "ref_label" for the param-given ID. ref_label is used for the columns in table CURRENTLY_LOADED_FILES (see below)
+    Set rSixFileRef = CurrentDb.OpenRecordset("SELECT * FROM REF_SOURCE_FILE WHERE rsf_id = " & iSourceFileId)
+
+    sSixFileRefLabel = rSixFileRef.Fields("rsf_ref_label").Value
+
+    rSixFileRef.Close
+
+    Set rSixFileRef = Nothing
+
+    'Setting and executing the SQL Update query, using the previously obtained "ref_label" to reach the proper columns in CURRENTLY_LOADED_FILES table
+    CurrentDb.Execute "UPDATE CURRENTLY_LOADED_FILES" & vbCrLf & _
+                      "SET " & Replace(LCase(sSixFileRefLabel), " ", "_") & "_file = NULL, " & Replace(LCase(sSixFileRefLabel), " ", "_") & "_loading_date = NULL" & vbCrLf & _
+                      "WHERE ID = 1"
+
+End Sub
+
+'Public procedure to flush all referenced SIX files and data imported from SIX files from the database
+Public Sub FlushAll()
+
+    FlushSixIsin
+    FlushIsinPrograms
+
+    FlushSixLoadedFile 0
+    FlushSixLoadedFile 1
+    FlushSixLoadedFile 2
+
+    FlushTempDocsFromHDD
+
+End Sub
+
+'Public procedure to ultimately remove the unwanted Instrument rows from the database
+'Called only when Exporting the data to XML (Form_Dashboard --> btnExportToXML_Click), to ensure the XML file do not contain those rows
+Public Sub RemoveUnwantedInstruments()
+
+    'Executing 4 small DELETE SQL queries, with different WHERE clauses
+    CurrentDb.Execute "DELETE FROM SIX_ISIN WHERE rsf_id = 0 AND isin LIKE '" & sInstruNullIsinPattern & "*'"
+    CurrentDb.Execute "DELETE FROM SIX_ISIN WHERE rsf_id = 0 AND target = 'CMIC' AND confidence_level < 25"
+    CurrentDb.Execute "DELETE FROM SIX_ISIN WHERE rsf_id = 0 AND target <> 'CMIC' AND (sanctioned = 'No' OR confidence_level <= 25)"
+
+    'Commented to allow inactive flag export (AER_EVOLLM-3)
+    'CurrentDb.Execute "DELETE FROM SIX_ISIN WHERE rsf_id = 0 AND active_flag = 'Inactive'"
+
+End Sub
+
+'Public procedure to fill each ISIN with its "regime's" program in the dedicated table
+Public Sub FillIsinPrograms()
+
+    Dim sEUUSSelect, sUKSelect, sUSPPSelect, sSqlQuery As String
+
+    'If the destination table is already filled...
+    If CurrentDb.OpenRecordset("SELECT COUNT(*) AS CountRows FROM ISIN_PROGRAMS")!CountRows > 0 Then
+
+        '... flush it
+        FlushIsinPrograms
+
+    End If
+
+    'if the USPP Split checkbox is ticked...
+    If Form_Dashboard.chkSplitUSPP.Value Then
+
+        '... get the SQL filter text to get USPP rows differenciated from EU/US ISIN
+        sUSPPSelect = GetUSPPISINSqlFilter
+
+    Else '... if USPP checkbox not ticked...
+
+        '... put "False" as SQL filter (will result in USPP rows not being segregated from EU/US ISIN)
+        sUSPPSelect = "False"
+
+    End If
+
+    'Set SQL filters for EU/US, UK and USPP, depending on the USPP Split filter result
+    sEUUSSelect = "(SUM(IIF(eu IS NOT NULL OR us_sdn IS NOT NULL OR us_non_sdn IS NOT NULL AND NOT " & sUSPPSelect & ", 1, 0)) > 0)"
+    sUKSelect = "(SUM(IIF(uk IS NOT NULL, 1, 0)) > 0)"
+    sUSPPSelect = "(SUM(IIF(" & sUSPPSelect & ", 1, 0)) > 0 AND NOT " & sEUUSSelect & ")"
+
+    'Building SQL query using obtained filters to INSERT into destination tables
+    sSqlQuery = "INSERT INTO ISIN_PROGRAMS (isin, is_eu_us, is_uk, is_uspp)" & vbCrLf & _
+                "SELECT isin," & vbCrLf & vbTab & _
+                        sEUUSSelect & "," & vbCrLf & vbTab & _
+                        sUKSelect & "," & vbCrLf & vbTab & _
+                        sUSPPSelect & vbCrLf & _
+                        "FROM SIX_ISIN" & vbCrLf & _
+                "GROUP BY ISIN"
+
+    'Executing SQL query
+    CurrentDb.Execute sSqlQuery
+
+End Sub
+
+'Public procedure to flush the destination table for ISINs "regime's" program
+Public Sub FlushIsinPrograms()
+
+    'Executing SQL DELETE query
+    CurrentDb.Execute "DELETE FROM ISIN_PROGRAMS"
+
+End Sub
+
+'Public procedure to import the content of a SIX CSV file into the database
+'Mandatory param is an ID to determine which file is to be uploaded, each file-type having its own set of integration rules
+Public Function importSixFile(ByVal iSixFileId As Integer, ByVal iSixFileFileNb As Integer) As Boolean
+
+    Dim sSixFileName, sSixFileNameNoPath, sSixFileIsin, sSixFileExternalReference, sSixFileActive, sSixFileSanctioned, sSixFileRefLabel, sSixFileRefLabelDetailed, _
+        sSixFileFilenamePattern, sSixFileHeader, sSqlInsertString, sSixFileLinkEntity, sSixFileLinkCsid, sSixFileNameDirectIssuer, sSixFileSanctionedParentEntity, _
+        sSixFileInstrName, sSixFileInstrumentType, sSixFileSanctionsRelevantAssetClass, sSixFileMainInstrument, sSixFileEquityTypeOfIssuance, _
+        sSixFileDenominationCurrency, sSixFileDebtLifetimeInDays, sSixFileActiveFlag, sSixFileSedol, sSixFileCusip, sSixFileCins, _
+        sSixFileAustrian, sSixFileBelgian, sSixFileCanadian, sSixFileGerman, sSixFileDenmark, sSixFileFranceRga, sSixFileFranceEuroclear, _
+        sSixFileItalian, sSixFileJapaneseCurrent, sSixFileJapaneseNew, sSixFileLuxembourg, sSixFileNetherland, sSixFileNorwegian, _
+        sSixFileSwedish, sSixFileXsIntNumber, sSixFilePortugal, sSixFileSouthKorea, sSixFileHongKong, sSixFileBloombergId, sSixFileEu, _
+        sSixFileUsSdn, sSixFileUsNonSdn, sSixFileUk, sSixFileTarget, sSixFileReasonForChange, sSixFileSanctionsRationale, sSixFileDescription, _
+        sSixFileUnderlyingCh, sSixFileUnderlyingIsin, sSixFileUnderlyingIssuerGk, sSixFileUnderlyingIssuerName, sSixFileFISN, sMsgBoxString, sComparisonFilenamePattern, mssg As String
+    Dim iSixFileIsinCol, iSixFileSanctionedCol, iSixFileLinkEntityCol, iSixFileLinkCsidCol, iSixFileNameDirectIssuerCol, iSixFileSanctionedParentEntityCol, _
+        iSixFileConfidenceLevelCol, iSixFileInstrNameCol, iSixFileExternalReferenceCol, iSixFileIndicativeIssueDateCol, iSixFileInstrumentTypeCol, _
+        iSixFileSanctionsRelevantAssetClassCol, iSixFileMainInstrumentCol, iSixFileEquityTypeOfIssuanceCol, iSixFileDenominationCurrencyCol, _
+        iSixFileMaturityDateCol, iSixFileDebtLifetimeInDaysCol, iSixFileActiveFlagCol, iSixFileIssueDateCol, iSixFileCapitalChangeDateCol, _
+        iSixFileSedolCol, iSixFileCusipCol, iSixFileCinsCol, iSixFileAustrianCol, iSixFileBelgianCol, iSixFileCanadianCol, iSixFileGermanCol, _
+        iSixFileDenmarkCol, iSixFileFranceRgaCol, iSixFileFranceEuroclearCol, iSixFileItalianCol, iSixFileJapaneseCurrentCol, iSixFileJapaneseNewCol, _
+        iSixFileLuxembourgCol, iSixFileNetherlandCol, iSixFileNorwegianCol, iSixFileSwedishCol, iSixFileXsIntNumberCol, iSixFilePortugalCol, _
+        iSixFileSouthKoreaCol, iSixFileHongKongCol, iSixFileBloombergIdCol, iSixFileEuCol, iSixFileUsSdnCol, iSixFileUsNonSdnCol, iSixFileUkCol, _
+        iSixFileTargetCol, iSixFileReasonForChangeCol, iSixFileSanctionsRationaleCol, iSixFileDescriptionCol, iSixFileExpiryDateCol, iSixFileUnderlyingChCol, _
+        iSixFileUnderlyingIsinCol, iSixFileUnderlyingIssuerGkCol, iSixFileUnderlyingIssuerNameCol, iSixFileFISNCol, iConfidenceLevel, iCurrentTaux, iPreviousTaux As Integer
+    Dim iCntRows, iCurrentRowNb, timerStartValue, timerStopValue As Long
+    Dim dSixFileIndicativeIssueDate, dSixFileMaturityDate, dSixFileIssueDate, dSixFileCapitalChangeDate, dSixFileExpiryDate, currentDateTime As Date
+    Dim vaColumnsFromFile, vaRowsFromFile, vaCurrentRow As Variant
+    Dim fdp As FileDialog
+    Dim tsFile As TextStream
+    Dim bIsCMIC, bFilesDatesMatch As Boolean
+    Dim rMyRecordSet As Recordset
+
+    importSixFile = False
+
+    'Getting the all the references for the param-given file type. This associates the columns names to a columns index order (index = -1 --> column absent)
+    Set rMyRecordSet = CurrentDb.OpenRecordset("SELECT * FROM REF_SOURCE_FILE WHERE rsf_id = " & iSixFileId & " AND rsf_file_nb = " & iSixFileFileNb)
+
+    'Putting all recorset's results into properly typed variables and closing recordset
+    With rMyRecordSet
+
+        sSixFileRefLabel = .Fields("rsf_ref_label").Value
+        sSixFileRefLabelDetailed = sSixFileRefLabel & " " & .Fields("rsf_ref_label_details").Value
+        sSixFileFilenamePattern = .Fields("rsf_filename_pattern").Value
+        sSixFileHeader = .Fields("rsf_header").Value
+
+        iSixFileIsinCol = .Fields("rsf_isin_column").Value
+        iSixFileActiveFlagCol = .Fields("rsf_active_flag_column").Value
+        iSixFileSanctionedCol = .Fields("rsf_sanctioned_column").Value
+        iSixFileConfidenceLevelCol = .Fields("rsf_confidence_level_column").Value
+        iSixFileExternalReferenceCol = .Fields("rsf_external_reference_column").Value
+        iSixFileTargetCol = .Fields("rsf_target_column").Value
+
+        iSixFileLinkEntityCol = .Fields("rsf_link_entity_column").Value
+        iSixFileLinkCsidCol = .Fields("rsf_link_csid_column").Value
+        iSixFileNameDirectIssuerCol = .Fields("rsf_name_direct_issuer_column").Value
+        iSixFileSanctionedParentEntityCol = .Fields("rsf_sanctioned_parent_entity_column").Value
+        iSixFileInstrNameCol = .Fields("rsf_instr_name_column").Value
+        iSixFileIndicativeIssueDateCol = .Fields("rsf_indicative_issue_date_column").Value
+        iSixFileInstrumentTypeCol = .Fields("rsf_instrument_type_column").Value
+        iSixFileSanctionsRelevantAssetClassCol = .Fields("rsf_sanctions_relevant_asset_class_column").Value
+        iSixFileMainInstrumentCol = .Fields("rsf_main_instrument_column").Value
+        iSixFileEquityTypeOfIssuanceCol = .Fields("rsf_equity_type_of_issuance_column").Value
+        iSixFileDenominationCurrencyCol = .Fields("rsf_denomination_currency_column").Value
+        iSixFileMaturityDateCol = .Fields("rsf_maturity_date_column").Value
+        iSixFileDebtLifetimeInDaysCol = .Fields("rsf_debt_lifetime_in_days_column").Value
+        iSixFileIssueDateCol = .Fields("rsf_issue_date_column").Value
+        iSixFileCapitalChangeDateCol = .Fields("rsf_capital_change_date_column").Value
+        iSixFileSedolCol = .Fields("rsf_sedol_column").Value
+        iSixFileCusipCol = .Fields("rsf_cusip_column").Value
+        iSixFileCinsCol = .Fields("rsf_cins_column").Value
+        iSixFileAustrianCol = .Fields("rsf_austrian_column").Value
+        iSixFileBelgianCol = .Fields("rsf_belgian_column").Value
+        iSixFileCanadianCol = .Fields("rsf_canadian_column").Value
+        iSixFileGermanCol = .Fields("rsf_german_column").Value
+        iSixFileDenmarkCol = .Fields("rsf_denmark_column").Value
+        iSixFileFranceRgaCol = .Fields("rsf_france_rga_column").Value
+        iSixFileFranceEuroclearCol = .Fields("rsf_france_euroclear_column").Value
+        iSixFileItalianCol = .Fields("rsf_italian_column").Value
+        iSixFileJapaneseCurrentCol = .Fields("rsf_japanese_current_column").Value
+        iSixFileJapaneseNewCol = .Fields("rsf_japanese_new_column").Value
+        iSixFileLuxembourgCol = .Fields("rsf_luxembourg_column").Value
+        iSixFileNetherlandCol = .Fields("rsf_netherland_column").Value
+        iSixFileNorwegianCol = .Fields("rsf_norwegian_column").Value
+        iSixFileSwedishCol = .Fields("rsf_swedish_column").Value
+        iSixFileXsIntNumberCol = .Fields("rsf_xs_int_number_column").Value
+        iSixFilePortugalCol = .Fields("rsf_portugal_column").Value
+        iSixFileSouthKoreaCol = .Fields("rsf_south_korea_column").Value
+        iSixFileHongKongCol = .Fields("rsf_hong_kong_column").Value
+        iSixFileBloombergIdCol = .Fields("rsf_bloomberg_id_column").Value
+        iSixFileEuCol = .Fields("rsf_eu_column").Value
+        iSixFileUsSdnCol = .Fields("rsf_us_sdn_column").Value
+        iSixFileUsNonSdnCol = .Fields("rsf_us_non_sdn_column").Value
+        iSixFileUkCol = .Fields("rsf_uk_column").Value
+        iSixFileReasonForChangeCol = .Fields("rsf_reason_for_change_column").Value
+        iSixFileSanctionsRationaleCol = .Fields("rsf_sanctions_rationale_column").Value
+        iSixFileDescriptionCol = .Fields("rsf_description_column").Value
+        iSixFileExpiryDateCol = .Fields("rsf_expiry_date_column").Value
+        iSixFileUnderlyingChCol = .Fields("rsf_underlying_ch_column").Value
+        iSixFileUnderlyingIsinCol = .Fields("rsf_underlying_isin_column").Value
+        iSixFileUnderlyingIssuerGkCol = .Fields("rsf_underlying_issuer_gk_column").Value
+        iSixFileUnderlyingIssuerNameCol = .Fields("rsf_underlying_issuer_name_column").Value
+        iSixFileFISNCol = .Fields("rsf_fisn_column").Value
+
+        .Close
+
+    End With
+    Set rMyRecordSet = Nothing
+
+    'Defining an Open File dialog box based/restricted on the file ID (and file name and properties)
+    Set fdp = Application.FileDialog(msoFileDialogFilePicker)
+
+    With fdp
+
+        .Title = "Ouvrir un fichier CSV " & sSixFileRefLabel
+        .InitialFileName = ""
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Fichier CSV " & sSixFileRefLabel, sAllFilenamesFilter
+
+    End With
+
+    'Showing the Open File dialog box and if a file has actually been selected...
+    If fdp.Show Then
+
+        '... catch the filename + stripping it from its path + creating a compare pattern using the fetched SIX file filename pattern
+        sSixFileName = fdp.SelectedItems(1)
+        sSixFileNameNoPath = GetFilenameFromPath(sSixFileName)
+        sComparisonFilenamePattern = sSixAllFilenamesHeader & sSixFileFilenamePattern & sSixAllFilenamesDateTimePattern & sAllFilenamesExtension
+        Form_Dashboard.lblProgressStep.Caption = "Importing File : " & vbCrLf & "   - " & sSixFileNameNoPath
+
+        'Checking if the selected file's name corresponds with the expected filename pattern...
+        If sSixFileNameNoPath Like sComparisonFilenamePattern Then
+
+            'If the loaded file is the SIX Instruments...
+            If iSixFileId = 0 Then
+
+                '... there is no need to compare any file date, so boolean is forced to True
+                bFilesDatesMatch = True
+
+            Else '... else, the loaded file is not SIX Instruments...
+
+                '... so the boolean gets the result of the comparison of the current SIX file (to be loaded) date and the previously loaded SIX Instrument's
+                bFilesDatesMatch = compareSixFilenameDateToInstruDate(sSixFileNameNoPath)
+
+            End If
+
+            'If SIX files dates comparison is a match...
+            If bFilesDatesMatch Then
+
+                'Checking if the file is already opened elsewhere
+                If Not IsFileOpen(sSixFileName) Then
+                    importSixFile = AutoImportSixFile(iSixFileId, iSixFileFileNb, sSixFileName)
+                End If
+            Else '... else, means chosen filename date is not matching the previously loaded Instruments filename date
+
+                '... Ok only dialog box with proper message
+                MsgBox "La date du nom de fichier " & sSixFileRefLabel & " choisi ne correspond pas à la date du fichier SIX Instruments déjà chargé. Il ne peut être importé.", vbExclamation + vbOKOnly, "Dates de fichiers non correspondantes"
+
+            End If
+        Else '... else, means chosen filename does not match with expected filename pattern
+
+            '... Ok only dialog box with proper message
+            MsgBox "Le nom du fichier choisi ne correspond pas à un fichier " & sSixFileRefLabel & ". Il ne peut pas être importé.", vbExclamation + vbOKOnly, "Nom de fichier " & sSixFileRefLabel & " non conforme"
+
+        End If
+    Else '... else, means no file was selected in the file choosing dialog box...
+
+        '... Ok only dialog box with proper message
+        MsgBox "Pas de fichier choisi", vbInformation, "Pas de fichier choisi"
+
+    End If
+    Form_Dashboard.lblProgressStep.Caption = ""
+    Set fdp = Nothing
+End Function
+
+'Public procedure to import a REGLISS GENERIC CSV file for historical Application Dates
+Public Sub importReglissFile(ByVal iIdReglissFileOrigin As Integer)
+
+    Dim sReglissFileName, sReglissFileNameNoPath, sIsin, sReglissFileRefLabel, sReglissFileHeader As String
+    Dim iReglissFileIsinCol, iReglissFileIssueDateCol, iCntRows, iCurrentRowNb, iCurrentTaux, iPreviousTaux As Integer
+    Dim vaRowsFromFile, vaCurrentRow, vaColumnsFromFile As Variant
+    Dim dIsinApplicationDate As Date
+    Dim fdp As FileDialog
+    Dim tsFile As TextStream
+    Dim rReglissFileRef As Recordset
+    Dim asReglissLists(3) As String
+
+    'Setting an array with various possibilities of ISIN regimes. Its index is linked to the lists checkboxes
+    asReglissLists(0) = "CMIC"
+    asReglissLists(1) = "EU/US ISIN"
+    asReglissLists(2) = "UK ISIN"
+    asReglissLists(3) = "US PERSONS PROHIBITION ISIN"
+
+    'Getting the information of the REGLISS GENERIC CSV file (rsf_id = 3) stored in the REF_SOURCE_FILE parameters-table by executing the proper SQL query
+    Set rReglissFileRef = CurrentDb.OpenRecordset("SELECT * FROM REF_SOURCE_FILE WHERE rsf_id = 3")
+
+    'Putting the query results in properly typed variables + closing resultset
+    With rReglissFileRef
+
+        sReglissFileRefLabel = .Fields("rsf_ref_label").Value
+        sReglissFileHeader = .Fields("rsf_header").Value
+        iReglissFileIsinCol = .Fields("rsf_isin_column").Value
+        iReglissFileIssueDateCol = .Fields("rsf_issue_date_column").Value
+
+        .Close
+
+    End With
+    Set rReglissFileRef = Nothing
+    'Creating a File Dialog object to pick up a file
+    Set fdp = Application.FileDialog(msoFileDialogFilePicker)
+
+    'Properly setting the File Dialog params to open only CSV and incite user to choose a REGLISS GENERIC formatted file
+    With fdp
+
+        .Title = "Ouvrir un fichier CSV " & sReglissFileRefLabel & " " & asReglissLists(iIdReglissFileOrigin)
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Fichier CSV " & sReglissFileRefLabel, sAllFilenamesFilter
+
+    End With
+
+    'Showing File Dialog and waiting for feedback (True if a file was selected)
+    If fdp.Show Then
+
+        'Catching the picked filename + stripping it from its path
+        sReglissFileName = fdp.SelectedItems(1)
+        sReglissFileNameNoPath = GetFilenameFromPath(sReglissFileName)
+
+        Form_Dashboard.lblProgressStep.Caption = "Importing File : " & vbCrLf & "   - " & sReglissFileNameNoPath
+
+        'Checking if the chosen file is already opened. If not...
+        If Not IsFileOpen(sReglissFileName) Then
+            AutoImportReglissFile iIdReglissFileOrigin, sReglissFileName
+        End If
+    Else '... else means that no file was picked...
+
+        '... OK only dialog box with proper message
+        MsgBox "Aucun fichier " & sReglissFileRefLabel & " " & asReglissLists(iIdReglissFileOrigin) & " n'a été choisi : aucune mise à jour effectué pour le périmètre " & asReglissLists(iIdReglissFileOrigin) & ".", vbInformation, "Pas de fichier choisi pour " & asReglissLists(iIdReglissFileOrigin)
+
+    End If
+    Form_Dashboard.lblProgressStep.Caption = ""
+    Set fdp = Nothing
+End Sub
+
+'Public procedure to flush - partially or totally - the ISIN Historical Application Dates table
+Public Sub FlushISINHistoApplicationDate(Optional ByVal iIdReglissFileOrigin As Integer = -1)
+
+    'Executing the DELETE SQL query to flush the table. The WHERE clause depends on the procedure's parameter
+    CurrentDb.Execute "DELETE FROM ISIN_HISTO_APPLICATION_DATE" & IIf(iIdReglissFileOrigin >= 0, " WHERE id_regliss_file_origin = " & CStr(iIdReglissFileOrigin), vbNullString)
+
+End Sub
+
+'Public procedure to reset the USPP filter to its original values (in the proper table)
+Public Sub ResetToOriginalUSPPFilter()
+
+    'Executing the DELETE SQL query to completely flush the table containing the USPP filter
+    CurrentDb.Execute "DELETE FROM USPP_ISIN_SELECT_PARAMETERS"
+
+    'Executing the STORED PROC putting back the original USPP filter
+    CurrentDb.Execute "INIT_USPP_ISIN_SELECT_PARAMETERS"
+
+End Sub
+
+'Public function exporting to XML 1 list containing SIX imported data
+'Parameters are :
+' - the Type of Export : 0 --> CMIC / 1 --> ISIN
+' - Export Folder : the full path where to put the XML file
+' - the Program Id : matches the regimes/program checkboxes, 1 --> EU/US / 2 --> UK / 3 --> USPP
+Public Function ExportXML(ByVal iTypeExport As Integer, ByVal sExportFolder As String, ByVal iProgramExport As Integer) As String
+    Const isinToSearch As String = "RU000A1057K9"
+    Dim rsSixIsin As Recordset
+    Dim xmlFormattedDoc, xslDoc As MSXML2.DOMDocument60
+    Dim listNode, recordsNode, recordNode, generalInformationNode, programsNode, programNode, sanctionsNode, _
+        sourcesNode, extraRecordDetailNode, extraRecordAddressesNode, extraRecordIdDocsNode, extraRecordCountryDetailsNode, _
+        extraRecordDatesDetailsNode, extraRecordAliasesNode, addressNode, documentNode, countryNode, dateNode, aliasNode, extraRecordFunctionsNode, _
+        extraRecordCodesNode, extraRecordRelationsNode, extraRecordImagesNode, codeNode, listApplicationDateEl, _
+        listJuridictionBaseEl, listLabelEl, listSourceVersionEl, listTypeEl, recordGiFullNameEl, recordGiTypeEl, recordGiSearchCodeEl, _
+        recordGiDescriptionEl, recordGiInstructionEl, recordGiCommentsEl, recordGiNotesEl, extraRecordGenderEl, _
+        extraRecordLastNameEl, extraRecordMiddleNameEl, extraRecordFirstnameEl, extraRecordSuffixEl, extraRecordMaidenNameEl, _
+        extraRecordTitleEl, extraRecordIsDeceasedEl, programLabelEl, programTypeEl, programDescriptionEl, sanctionEl, _
+        sourceEl, address1El, address2El, addressCityEl, addressCountryEl, addressRemarksEl, addressStateEl, addressZipCodeEl, _
+        countryAdditionalInfoEl, countryCountryEl, countryPrincipalEl, countryTypeElaliasTitleEl, _
+        dateIsPrimaryEl, dateTypeEl, dateDateValueEl, datePlaceValue, dateCountryEl, dateDateAdditionalInfo, _
+        aliasFirstNameEl, aliasMiddleNameEl, aliasLastNameEl, aliasQualityEl, aliasTypeEl, aliasLanguageEl, codeValueEl, codeTypeEl As IXMLDOMElement
+    Dim recordExternalRefAtt, recordApplicationDateAtt, programIdAtt, sanctionCodeAtt, sanctionEndDateAtt, sanctionIdAtt, sanctionSinceDateAtt As IXMLDOMAttribute
+    Dim sFileSave, sCurrentExtRef, sPreviousIsin, sSqlQuery, sXMLFilenameHeader, sGeolocXMLFilenamePattern As String
+    Dim asTypeExport(1, 3) As String
+    Dim asLinkEntities() As String
+    Dim asLinkCSIDs() As String
+    Dim asSanctionedParentEntities() As String
+    Dim asConfidenceLevels() As String
+    Dim asInstrNames() As String
+    Dim asIndicativeIssueDates() As String
+    Dim asInstrumentTypes() As String
+    Dim asSanctionsRelevantAssetClasses() As String
+    Dim asMainInstruments() As String
+    Dim asEquityTypesOfIssuances() As String
+    Dim asDenominationCurrencies() As String
+    Dim asMaturityDates() As String
+    Dim asDebtsLifetimeInDays() As String
+    Dim asActiveFlags() As String
+    Dim asIssueDates() As String
+    Dim asCapitalChangeDates() As String
+    Dim asDescriptions() As String
+    Dim asExpiryDates() As String
+    Dim asUnderlyingCHs() As String
+    Dim asUnderlyingISINs() As String
+    Dim asUnderlyingIssuersGKs() As String
+    Dim asUnderlyingIssuersNames() As String
+    Dim asFISNs() As String
+    Dim asReasonsForChange() As String
+    Dim asSanctionsRationale() As String
+    Dim asSearchCodes() As String
+    Dim iMaxArrayLinkEntities, iMaxArrayLinkCSIDs, iMaxArraySanctionedParentEntities, iMaxArrayConfidenceLevels, iMaxArrayInstrNames, _
+        iMaxArrayIndicativeIssueDates, iMaxArrayInstrumentTypes, iMaxArraySanctionsRelevantAssetClasses, iMaxArrayMainInstruments, _
+        iMaxArrayEquityTypesOfIssuances, iMaxArrayDenominationCurrencies, iMaxArrayMaturityDates, iMaxArrayDebtsLifetimeInDays, _
+        iMaxArrayActiveFlags, iMaxArrayIssueDates, iMaxArrayCapitalChangeDates, iMaxArrayDescriptions, iMaxArrayExpiryDates, _
+        iMaxArrayUnderlyingCHs, iMaxArrayUnderlyingISINs, iMaxArrayUnderlyingIssuersGKs, iMaxArrayUnderlyingIssuersNames, _
+        iMaxArrayFISNs, iMaxArrayReasonsForChange, iMaxArraySanctionsRationale, iMaxArraySearchCodes, iPreviousRsfId As Long
+    Dim bIsFileExist, bIsFileOpen, bOverwriteFile As Boolean
+    Const sHeaderRecordNotes As String = "ISIN related characteristics : "
+    Dim cOrderderprogramsNode As IXMLDOMElement
+
+
+    'Defining the static values to put in the array (array can't be defined as a Constant in VBA) relative to the type of export
+    asTypeExport(0, 0) = "CMIC"
+    asTypeExport(0, 1) = "="
+    asTypeExport(0, 2) = "GC Global-USA-NS-CMIC Securities - SIX"
+    asTypeExport(0, 3) = "GC Global-USA-NS-CMIC-SIX"
+    asTypeExport(1, 0) = "ISIN"
+    asTypeExport(1, 1) = "<>"
+    asTypeExport(1, 2) = IIf(iProgramExport = 1, "GC Global", "Local") & " - ISIN - SIX"
+    asTypeExport(1, 3) = IIf(iProgramExport = 1, "GC Global", "Local") & "-ISIN-SIX"
+
+    'Building the XML filename pattern using the current version of the Converter tool + "Geolocalized/list/program" filename pattern
+    sXMLFilenameHeader = "Converter_v" & GetSixConverterVersion & "_"
+    sGeolocXMLFilenamePattern = "-" & IIf(iProgramExport = 1, "EU_US", IIf(iProgramExport = 2, "UK", "US_PERSONS_PROHIBITION")) & "-"
+    sFileSave = sXMLFilenameHeader & asTypeExport(iTypeExport, 3) & sGeolocXMLFilenamePattern & Replace(FormatDateToProperStringDate(dSixFileInstruDate), "-", "") & "_" & sSixFileInstruTime & ".xml"
+
+    'Setting booleans for an "existing file", "file already opened" and "file can be overwritten" to false by default
+    bIsFileExist = False
+    bIsFileOpen = False
+    bOverwriteFile = False
+
+    'Testing if complete filename (including path) does not exceed 247...
+    If Not Len(sExportFolder & "\" & sFileSave) > 247 Then
+
+        '... then if file already exists...
+        If isFileExist(sExportFolder & "\" & sFileSave) Then
+
+            '... Setting appropriate boolean to True
+            bIsFileExist = True
+
+            'Testing if existing file is already opened by a Microsoft Office tool...
+            If IsFileOpen(sExportFolder & "\" & sFileSave, True) Then
+
+                '... then setting appropriate boolean to True
+                bIsFileOpen = True
+
+            Else ' ...else (file exists but not already opened)
+
+                '... asking user if he/she really wants to overwrite the existing file, and setting appropriate boolean accordingly
+                bOverwriteFile = (MsgBox("Le fichier :" & vbCrLf & vbCrLf & sExportFolder & "\" & sFileSave & vbCrLf & vbCrLf & " existe déjà. Son contenu sera donc écrasé." & vbCrLf & vbCrLf & "Êtes-vous sûr(e) de vouloir cela ?", vbQuestion + vbYesNo, "Fichier existant") = vbYes)
+
+            End If
+        End If
+
+        Form_Dashboard.lblProgressStep.Caption = "Exporting : " & sFileSave
+
+        'Testing if the file is not already opened and either the file simply does not exist OR the file exists but can be overwritten, using the previously set booleans...
+        If Not bIsFileOpen And (Not bIsFileExist Or (bIsFileExist And bOverwriteFile)) Then
+
+            'Setting a new XML document object
+            Set xmlDoc = New MSXML2.DOMDocument60
+            Call xmlDoc.SetProperty("SelectionLanguage", "XPath")
+
+            'Setting header tags/elements for the XML-document object compliant with the Regliss V4 standard
+            Set listNode = xmlDoc.createElement("list")
+            xmlDoc.appendChild listNode
+
+            Set listApplicationDateEl = xmlDoc.createElement("applicationDate")
+            listApplicationDateEl.Text = FormatDateToProperStringDate(dSixFileInstruDate)
+            listNode.appendChild listApplicationDateEl
+
+            Set listJuridictionBaseEl = xmlDoc.createElement("juridictionBase")
+            listJuridictionBaseEl.Text = "Group"
+            listNode.appendChild listJuridictionBaseEl
+
+            Set listLabelEl = xmlDoc.createElement("label")
+            listLabelEl.Text = asTypeExport(iTypeExport, 2)
+            listNode.appendChild listLabelEl
+
+            Set listSourceVersionEl = xmlDoc.createElement("sourceVersion")
+            listSourceVersionEl.Text = "1"
+            listNode.appendChild listSourceVersionEl
+
+            Set listTypeEl = xmlDoc.createElement("type")
+            listTypeEl.Text = "Full"
+            listNode.appendChild listTypeEl
+
+            Set recordsNode = xmlDoc.createElement("records")
+            listNode.appendChild recordsNode
+
+            'Building the SQL SELECT query to fetch the proper SIX ISIN rows using the given parameters to delimit the right ensemble + executing the query into a recordset object
+            'sSqlQuery = "SELECT si.*, ihad.application_date FROM (SIX_ISIN si INNER JOIN ISIN_PROGRAMS ip ON (si.isin = ip.isin AND " & IIf(iProgramExport = 1, "ip.is_eu_us", IIf(iProgramExport = 2, "ip.is_uk", IIf(iProgramExport = 3, "ip.is_uspp", "1 = 1"))) & ")) LEFT OUTER JOIN ISIN_HISTO_APPLICATION_DATE ihad ON (si.isin = ihad.isin) WHERE target " & asTypeExport(iTypeExport, 1) & " 'CMIC' ORDER BY si.isin, si.rsf_id"
+            ' updated to have incative or active filter
+            'Building the SQL SELECT query to fetch the proper SIX ISIN rows using the given parameters to delimit the right ensemble + executing the query into a recordset object
+            If Form_Dashboard.chkExportInactiveISIN.Value = True Then
+                sSqlQuery = "SELECT si.*, ihad.application_date FROM (SIX_ISIN si INNER JOIN ISIN_PROGRAMS ip ON (si.isin = ip.isin AND " & IIf(iProgramExport = 1, "ip.is_eu_us", IIf(iProgramExport = 2, "ip.is_uk", IIf(iProgramExport = 3, "ip.is_uspp", "1 = 1"))) & ")) LEFT OUTER JOIN ISIN_HISTO_APPLICATION_DATE ihad ON (si.isin = ihad.isin) WHERE target " & asTypeExport(iTypeExport, 1) & " 'CMIC' AND NOT( si.active_flag='Inactive' AND EXISTS (SELECT 1 FROM ISIN_INACTIF_EXCLUSION_LIST id WHERE id.isin = si.isin )) ORDER BY si.isin, si.rsf_id"
+            Else
+                sSqlQuery = "SELECT si.*, ihad.application_date FROM (SIX_ISIN si INNER JOIN ISIN_PROGRAMS ip ON (si.isin = ip.isin AND " & IIf(iProgramExport = 1, "ip.is_eu_us", IIf(iProgramExport = 2, "ip.is_uk", IIf(iProgramExport = 3, "ip.is_uspp", "1 = 1"))) & ")) LEFT OUTER JOIN ISIN_HISTO_APPLICATION_DATE ihad ON (si.isin = ihad.isin) WHERE target " & asTypeExport(iTypeExport, 1) & " 'CMIC' AND si.active_flag <> 'Inactive' ORDER BY si.isin, si.rsf_id"
+            End If
+
+            Set rsSixIsin = CurrentDb.OpenRecordset(sSqlQuery)
+
+            'Setting the previous ISIN code as empty
+            sPreviousIsin = vbNullString
+
+            'Defining limits of all buffer arrays to 0 (= 1 cell)
+            iMaxArrayLinkEntities = 0
+            ReDim asLinkEntities(iMaxArrayLinkEntities) As String
+
+            iMaxArrayLinkCSIDs = 0
+            ReDim asLinkCSIDs(iMaxArrayLinkCSIDs) As String
+
+            iMaxArraySanctionedParentEntities = 0
+            ReDim asSanctionedParentEntities(iMaxArraySanctionedParentEntities) As String
+
+            iMaxArrayConfidenceLevels = 0
+            ReDim asConfidenceLevels(iMaxArrayConfidenceLevels) As String
+
+            iMaxArrayInstrNames = 0
+            ReDim asInstrNames(iMaxArrayInstrNames) As String
+
+            iMaxArrayIndicativeIssueDates = 0
+            ReDim asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) As String
+
+            iMaxArrayInstrumentTypes = 0
+            ReDim asInstrumentTypes(iMaxArrayInstrumentTypes) As String
+
+            iMaxArraySanctionsRelevantAssetClasses = 0
+            ReDim asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) As String
+
+            iMaxArrayMainInstruments = 0
+            ReDim asMainInstruments(iMaxArrayMainInstruments) As String
+
+            iMaxArrayEquityTypesOfIssuances = 0
+            ReDim asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) As String
+
+            iMaxArrayDenominationCurrencies = 0
+            ReDim asDenominationCurrencies(iMaxArrayDenominationCurrencies) As String
+
+            iMaxArrayMaturityDates = 0
+            ReDim asMaturityDates(iMaxArrayMaturityDates) As String
+
+            iMaxArrayDebtsLifetimeInDays = 0
+            ReDim asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) As String
+
+            iMaxArrayActiveFlags = 0
+            ReDim asActiveFlags(iMaxArrayActiveFlags) As String
+
+            iMaxArrayIssueDates = 0
+            ReDim asIssueDates(iMaxArrayIssueDates) As String
+
+            iMaxArrayCapitalChangeDates = 0
+            ReDim asCapitalChangeDates(iMaxArrayCapitalChangeDates) As String
+
+            iMaxArrayDescriptions = 0
+            ReDim asDescriptions(iMaxArrayDescriptions) As String
+
+            iMaxArrayExpiryDates = 0
+            ReDim asExpiryDates(iMaxArrayExpiryDates) As String
+
+            iMaxArrayUnderlyingCHs = 0
+            ReDim asUnderlyingCHs(iMaxArrayUnderlyingCHs) As String
+
+            iMaxArrayUnderlyingISINs = 0
+            ReDim asUnderlyingISINs(iMaxArrayUnderlyingISINs) As String
+
+            iMaxArrayUnderlyingIssuersGKs = 0
+            ReDim asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) As String
+
+            iMaxArrayUnderlyingIssuersNames = 0
+            ReDim asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) As String
+
+            iMaxArrayFISNs = 0
+            ReDim asFISNs(iMaxArrayFISNs) As String
+
+            iMaxArrayReasonsForChange = 0
+            ReDim asReasonsForChange(iMaxArrayReasonsForChange) As String
+
+            iMaxArraySanctionsRationale = 0
+            ReDim asSanctionsRationale(iMaxArraySanctionsRationale) As String
+
+            iMaxArraySearchCodes = 0
+            ReDim asSearchCodes(iMaxArraySearchCodes) As String
+
+            If iProgramExport = 2 Then
+                If DebugStatus Then Debug.Print "iProgramExport = 2"
+            End If
+            Open DebugfileName For Append As #99
+            Write #99, "=================================================================="
+            Write #99, "Export type : " & iProgramExport
+            Close #99
+            'Using the recordset object
+            With rsSixIsin
+
+                'If the recordset is not empty...
+                If Not (.BOF And .EOF) Then
+
+                    '... go to the last row then back to the first row
+                    'This simulates the browsing of all the recordset's rows and initializes the recordset's RecordCount property to the right value (all rows accounted)
+                    .MoveLast
+                    .MoveFirst
+
+                    'Looping through all the recordset's rows
+
+                    Dim strISIN As String
+
+                    Do While Not .EOF
+
+                        'If the current row's ISIN code is different from the previously fetched ISIN code...
+                        If .Fields("isin").Value <> sPreviousIsin Then
+
+                            If DebugStatus Then
+                                Debug.Print "ISIN : " & .Fields("isin").Value
+                    Open DebugfileName For Append As #99
+                    Write #99, "ISIN : "; .Fields("isin").Value
+                    Close #99
+                    If .Fields("isin").Value = isinToSearch Then
+                        Debug.Print "Enter Debug " & isinToSearch
+                    End If
+                End If
+
+                '... and if the current row isn't the first recordset's row...
+                If .AbsolutePosition > 0 Then
+
+                    If .AbsolutePosition Mod 200 = 0 Then
+                        DoEvents
+                    End If
+
+
+                    '... it means that the previous ISIN code information have been all browsed and fetched and concatenated,
+                    'hence, the previous ISIN XML data must be saved and closed before opening a new Record tag for the new ISIN code
+                    'and reinitialize all the buffer arrays
+                    If DebugStatus Then Debug.Print "Before : " & programsNode.ChildNodes.Length
+                    'Sorting programs alphabetically.
+                    If programsNode.ChildNodes.Length > 1 Then
+                        'creating temp XML Element object
+                        Set cOrderderprogramsNode = OrderProgramsNodes(programsNode)
+                        'Purging original content from Original programsNode
+                        For Each ChildTmp In programsNode.ChildNodes
+                            If DebugStatus Then Debug.Print " -> : " & ChildTmp.Text
+                            programsNode.RemoveChild ChildTmp
+                        Next
+
+                        If programsNode.ChildNodes.Length <> cOrderderprogramsNode.ChildNodes.Length Then
+                            If DebugStatus Then Debug.Print "     ---- NOT SAME SIZE ----     "
+                        Else
+                            If DebugStatus Then Debug.Print "     ----------     "
+                        End If
+
+                        'Adding OrderderprogramsNode in programsNode
+                        For Each newChildTmp In cOrderderprogramsNode.ChildNodes
+                            programsNode.appendChild newChildTmp
+                        Next
+
+                        For Each ChildTmp In programsNode.ChildNodes
+                            If DebugStatus Then Debug.Print " -> : " & ChildTmp.Text
+                        Next
+
+                    End If
+                    If DebugStatus Then Debug.Print "After : " & programsNode.ChildNodes.Length
+
+
+                    'If some Link Entites have been fetched...
+                    If asLinkEntities(iMaxArrayLinkEntities) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Link Entities buffer array into the XML Notes Element + reinitialize the Link Entities buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "link_entity : " & Join(asLinkEntities, " - ")
+                        iMaxArrayLinkEntities = 0
+                        ReDim asLinkEntities(iMaxArrayLinkEntities) As String
+
+                    End If
+
+                    'If some Link CSID/Issuer GK/Host GK have been fetched...
+                    If asLinkCSIDs(iMaxArrayLinkCSIDs) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Link CSID/Issuer GK/Host GK buffer array into the XML Notes Element + reinitialize the Link CSID/Issuer GK/Host GK buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & IIf(.Fields("rsf_id").Value = 0, "link_csid", IIf(.Fields("rsf_id").Value = 1, "issuer_gk", "host_gk")) & " : " & Join(asLinkCSIDs, " - ")
+                        iMaxArrayLinkCSIDs = 0
+                        ReDim asLinkCSIDs(iMaxArrayLinkCSIDs) As String
+
+                    End If
+
+                    'If some Sanctioned Parent Entites have been fetched...
+                    If asSanctionedParentEntities(iMaxArraySanctionedParentEntities) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Sanctioned Parent Entities buffer array into the XML Notes Element + reinitialize the Link Entities buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "sanctioned_parent_entity : " & Join(asSanctionedParentEntities, " - ")
+                        iMaxArraySanctionedParentEntities = 0
+                        ReDim asSanctionedParentEntities(iMaxArraySanctionedParentEntities) As String
+
+                    End If
+
+                    'If some Confidence Levels have been fetched...
+                    If asConfidenceLevels(iMaxArrayConfidenceLevels) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Confidence Levels buffer array into the XML Notes Element + reinitialize the Confidence Levels buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "confidence_level : " & Join(asConfidenceLevels, " - ")
+                        iMaxArrayConfidenceLevels = 0
+                        ReDim asConfidenceLevels(iMaxArrayConfidenceLevels) As String
+
+                    End If
+
+                    'If some Instruments Names have been fetched...
+                    If asInstrNames(iMaxArrayInstrNames) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Instruments Names buffer array into the XML Notes Element + reinitialize the instruments Names buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "instr_name : " & Join(asInstrNames, " - ")
+                        iMaxArrayInstrNames = 0
+                        ReDim asInstrNames(iMaxArrayInstrNames) As String
+
+                    End If
+
+                    'If some Indicative Issue Dates have been fetched...
+                    If asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Indicative Issue Dates buffer array into the XML Notes Element + reinitialize the Indicative Issue Dates buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "indicative_issue_date : " & Join(asIndicativeIssueDates, " - ")
+                        iMaxArrayIndicativeIssueDates = 0
+                        ReDim asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) As String
+
+                    End If
+
+                    'If some Instrument Types have been fetched...
+                    If asInstrumentTypes(iMaxArrayInstrumentTypes) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Instrument Types buffer array into the XML Notes Element + reinitialize the Instrument Types buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "instrument_type : " & Join(asInstrumentTypes, " - ")
+                        iMaxArrayInstrumentTypes = 0
+                        ReDim asInstrumentTypes(iMaxArrayInstrumentTypes) As String
+
+                    End If
+
+                    'If some Sanctions Relevant Asset Classes have been fetched...
+                    If asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Sanctions Relevant Asset Classes buffer array into the XML Notes Element + reinitialize the Sanctions Relevant Asset Classes buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "sanctions_relevant_asset_class : " & Join(asSanctionsRelevantAssetClasses, " - ")
+                        iMaxArraySanctionsRelevantAssetClasses = 0
+                        ReDim asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) As String
+
+                    End If
+
+                    'If some Main Instruments have been fetched...
+                    If asMainInstruments(iMaxArrayMainInstruments) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Main Instruments buffer array into the XML Notes Element + reinitialize the Main Instruments buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "main_instrument : " & Join(asMainInstruments, " - ")
+                        iMaxArrayMainInstruments = 0
+                        ReDim asMainInstruments(iMaxArrayMainInstruments) As String
+
+                    End If
+
+                    'If some Equity Types Of Issuances have been fetched...
+                    If asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Equity Types Of Issuances buffer array into the XML Notes Element + reinitialize the Equity Types Of Issuances buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "equity_type_of_issuance : " & Join(asEquityTypesOfIssuances, " - ")
+                        iMaxArrayEquityTypesOfIssuances = 0
+                        ReDim asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) As String
+
+                    End If
+
+                    'If some Denomination Currencies have been fetched...
+                    If asDenominationCurrencies(iMaxArrayDenominationCurrencies) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Denomination Currencies buffer array into the XML Notes Element + reinitialize the Denomination Currencies buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "denomination_currency : " & Join(asDenominationCurrencies, " - ")
+                        iMaxArrayDenominationCurrencies = 0
+                        ReDim asDenominationCurrencies(iMaxArrayDenominationCurrencies) As String
+
+                    End If
+
+                    'If some Maturity Dates have been fetched...
+                    If asMaturityDates(iMaxArrayMaturityDates) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Maturity Dates buffer array into the XML Notes Element + reinitialize the Maturity Dates buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "maturity_date : " & Join(asMaturityDates, " - ")
+                        iMaxArrayMaturityDates = 0
+                        ReDim asMaturityDates(iMaxArrayMaturityDates) As String
+
+                    End If
+
+                    'If some Debts Lifetime In Days have been fetched...
+                    If asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Debts Lifetime In Days buffer array into the XML Notes Element + reinitialize the Debts Lifetime In Days buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "debt_lifetime_in_days : " & Join(asDebtsLifetimeInDays, " - ")
+                        iMaxArrayDebtsLifetimeInDays = 0
+                        ReDim asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) As String
+
+                    End If
+
+                    'If some Active Flags have been fetched...
+                    If asActiveFlags(iMaxArrayActiveFlags) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Active Flags buffer array into the XML Notes Element + reinitialize the Active Flags buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "active_flag : " & Join(asActiveFlags, " - ")
+                        iMaxArrayActiveFlags = 0
+                        ReDim asActiveFlags(iMaxArrayActiveFlags) As String
+
+                    End If
+
+                    'If some Issue Dates have been fetched...
+                    If asIssueDates(iMaxArrayIssueDates) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Issue Dates buffer array into the XML Notes Element + reinitialize the Issue Dates buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "issue_date : " & Join(asIssueDates, " - ")
+                        iMaxArrayIssueDates = 0
+                        ReDim asIssueDates(iMaxArrayIssueDates) As String
+
+                    End If
+
+                    'If some Capital Change Dates have been fetched...
+                    If asCapitalChangeDates(iMaxArrayCapitalChangeDates) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Capital Change Dates buffer array into the XML Notes Element + reinitialize the Capital Change Dates buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "capital_change_date : " & Join(asCapitalChangeDates, " - ")
+                        iMaxArrayCapitalChangeDates = 0
+                        ReDim asCapitalChangeDates(iMaxArrayCapitalChangeDates) As String
+
+                    End If
+
+                    'If some Descriptions have been fetched...
+                    If asDescriptions(iMaxArrayDescriptions) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Descriptions buffer array into the XML Notes Element + reinitialize the Descriptions buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "description : " & Join(asDescriptions, " - ")
+                        iMaxArrayDescriptions = 0
+                        ReDim asDescriptions(iMaxArrayDescriptions) As String
+
+                    End If
+
+                    'If some Expiry Dates have been fetched...
+                    If asExpiryDates(iMaxArrayExpiryDates) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Expiry Dates buffer array into the XML Notes Element + reinitialize the Expiry Dates buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "expiry_date : " & Join(asExpiryDates, " - ")
+                        iMaxArrayExpiryDates = 0
+                        ReDim asExpiryDates(iMaxArrayExpiryDates) As String
+
+                    End If
+
+                    'If some Underlying CHs have been fetched...
+                    If asUnderlyingCHs(iMaxArrayUnderlyingCHs) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Underlying CHs buffer array into the XML Notes Element + reinitialize the Underlying CHs buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "underlying_ch : " & Join(asUnderlyingCHs, " - ")
+                        iMaxArrayUnderlyingCHs = 0
+                        ReDim asUnderlyingCHs(iMaxArrayUnderlyingCHs) As String
+
+                    End If
+
+                    'If some Underlying ISINs have been fetched...
+                    If asUnderlyingISINs(iMaxArrayUnderlyingISINs) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Underlying ISINs buffer array into the XML Notes Element + reinitialize the Indicative Issue Dates buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "underlying_isin : " & Join(asUnderlyingISINs, " - ")
+                        iMaxArrayUnderlyingISINs = 0
+                        ReDim asUnderlyingISINs(iMaxArrayUnderlyingISINs) As String
+
+                    End If
+
+                    'If some Underlying Issuers GKs/Underlying GKs have been fetched...
+                    If asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Underlying Issuers GKs/Underlying GKs buffer array into the XML Notes Element + reinitialize the Underlying Issuers GKs/Underlying GKs buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & IIf(.Fields("rsf_id").Value = 1, "underlying_issuer_gk", "underlying_gk") & " : " & Join(asUnderlyingIssuersGKs, " - ")
+                        iMaxArrayUnderlyingIssuersGKs = 0
+                        ReDim asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) As String
+
+                    End If
+
+                    'If some Underlying Issuers Names/Underlying Issuers Shortnames have been fetched...
+                    If asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Underlying Issuers Names/Underlying Issuers Shortnames buffer array into the XML Notes Element + reinitialize the Underlying Issuers Names/Underlying Issuers Shortnames buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & IIf(.Fields("rsf_id").Value = 1, "underlying_issuer_name", "underlying_issuer_shortname") & " : " & Join(asUnderlyingIssuersNames, " - ")
+                        iMaxArrayUnderlyingIssuersNames = 0
+                        ReDim asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) As String
+
+                    End If
+
+                    'If some FISNs have been fetched...
+                    If asFISNs(iMaxArrayFISNs) <> vbNullString Then
+
+                        '... Putting the concatenated content of the FISNs buffer array into the XML Notes Element + reinitialize the FISNs Shortnames buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "FISN Instrument short name : " & Join(asFISNs, " - ")
+                        iMaxArrayFISNs = 0
+                        ReDim asFISNs(iMaxArrayFISNs) As String
+
+                    End If
+
+                    'If some Reasons For Change have been fetched...
+                    If asReasonsForChange(iMaxArrayReasonsForChange) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Reasons For Change buffer array into the XML Notes Element + reinitialize the Reasons For Change buffer array
+                        recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "reasons_for_change : " & Join(asReasonsForChange, " - ")
+                        iMaxArrayReasonsForChange = 0
+                        ReDim asReasonsForChange(iMaxArrayReasonsForChange) As String
+
+                    End If
+
+                    'If the XML Notes element contains anything...
+                    If recordGiNotesEl.Text <> vbNullString Then
+
+                        'Putting ultimatley the Notes header before anything
+                        recordGiNotesEl.Text = sHeaderRecordNotes & recordGiNotesEl.Text
+
+                    End If
+
+                    'If some Sanctions Rationale have been fetched...
+                    If asSanctionsRationale(iMaxArraySanctionsRationale) <> vbNullString Then
+
+                        '... Putting the concatenated content of the Sanctions Rationale buffer array into the XML Comments Element + reinitialize the Sanctions Rationale buffer array
+                        recordGiCommentsEl.Text = "sanctions_rationale : " & Join(asSanctionsRationale, " | ")
+                        iMaxArraySanctionsRationale = 0
+                        ReDim asSanctionsRationale(iMaxArraySanctionsRationale) As String
+
+                    End If
+
+                    'If some Search Codes Dates have been fetched...
+                    If asSearchCodes(iMaxArraySearchCodes) <> vbNullString Then
+                        If iMaxArraySearchCodes >= 1 Then
+                            QuickSort asSearchCodes, 0, UBound(asSearchCodes)
+                        End If
+                        '... Putting the concatenated content of the Search Codes buffer array into the XML Search Codes Element + reinitialize the Search Codes buffer array
+                        recordGiSearchCodeEl.Text = Join(asSearchCodes, " ")
+                        iMaxArraySearchCodes = 0
+                        ReDim asSearchCodes(iMaxArraySearchCodes) As String
+
+                        End If
+                    End If
+
+                    'From now on until the closing End If, what follows is done to create a new Record/ISIN in the XML-document object
+
+                    'Trimming the External Reference of the new ISIN
+                    sCurrentExtRef = Trim(Nz(.Fields("external_reference").Value, vbNullString))
+
+                    'Record tag/node creation with External Reference and Application Date attributes
+                    Set recordNode = xmlDoc.createElement("record")
+                    Set recordExternalRefAtt = xmlDoc.createAttribute("externalReference")
+                    recordExternalRefAtt.Value = sCurrentExtRef
+                    recordNode.setAttributeNode recordExternalRefAtt
+
+                    Set recordApplicationDateAtt = xmlDoc.createAttribute("applicationDate")
+
+                    'If Application Date has been provided by the query (meaning it was historical)...
+                    If Not IsNull(.Fields("application_date").Value) Then
+
+                        '... use it with the proper format
+                        recordApplicationDateAtt.Value = FormatDateToProperStringDate(.Fields("application_date").Value, (Form_Dashboard.PnlOptDateFormat.Value <> 1))
+
+                    Else '... else, meaning the Application Date was not provided...
+
+                        '... SIX Instrument filename's date
+                        recordApplicationDateAtt.Value = FormatDateToProperStringDate(dSixFileInstruDate, (Form_Dashboard.PnlOptDateFormat.Value <> 1))
+
+                    End If
+
+                    recordNode.setAttributeNode recordApplicationDateAtt
+
+                    recordsNode.appendChild recordNode
+
+                    'General Information tag/node creation
+                    Set generalInformationNode = xmlDoc.createElement("generalInformation")
+                    recordNode.appendChild generalInformationNode
+
+                    'Fullname tag/element (GI) creation
+                    Set recordGiFullNameEl = xmlDoc.createElement("fullName")
+                    recordGiFullNameEl.Text = Trim(Nz(.Fields("name_direct_issuer").Value, vbNullString))
+                    generalInformationNode.appendChild recordGiFullNameEl
+
+                    'Type tag/element (GI) creation
+                    Set recordGiTypeEl = xmlDoc.createElement("type")
+                    recordGiTypeEl.Text = "Entity"
+                    generalInformationNode.appendChild recordGiTypeEl
+
+                    'Search Code tag/element (GI) creation
+                    Set recordGiSearchCodeEl = xmlDoc.createElement("searchCode")
+                    generalInformationNode.appendChild recordGiSearchCodeEl
+
+                    'Description tag/element (GI) creation
+                    Set recordGiDescriptionEl = xmlDoc.createElement("description")
+                    generalInformationNode.appendChild recordGiDescriptionEl
+
+                    'Instruction tag/element (GI) creation
+                    Set recordGiInstructionEl = xmlDoc.createElement("instruction")
+                    generalInformationNode.appendChild recordGiInstructionEl
+
+                    'Comments tag/element (GI) creation
+                    Set recordGiCommentsEl = xmlDoc.createElement("comments")
+                    generalInformationNode.appendChild recordGiCommentsEl
+
+                    'Notes tag/element (GI) creation
+                    Set recordGiNotesEl = xmlDoc.createElement("notes")
+                    generalInformationNode.appendChild recordGiNotesEl
+
+                    'Programs tag/node (GI) creation
+                    Set programsNode = xmlDoc.createElement("programs")
+                    generalInformationNode.appendChild programsNode
+
+                    'Sanctions tag/node (GI) creation
+                    Set sanctionsNode = xmlDoc.createElement("sanctions")
+                    generalInformationNode.appendChild sanctionsNode
+
+                    'Sources tag/node (GI) creation
+                    Set sourcesNode = xmlDoc.createElement("sources")
+                    generalInformationNode.appendChild sourcesNode
+
+                    'Extra Individual/Entity Record Details tag/node (Record) creation
+                    Set extraRecordDetailNode = xmlDoc.createElement("extraEntityRecordDetail")
+                    recordNode.appendChild extraRecordDetailNode
+
+                    'Adresses tag/node (extra All Records Type Details) creation
+                    Set extraRecordAddressesNode = xmlDoc.createElement("addresses")
+                    extraRecordDetailNode.appendChild extraRecordAddressesNode
+
+                    'Identity Documents tag/node (extra All Records Type Details) creation
+                    Set extraRecordIdDocsNode = xmlDoc.createElement("identityDocuments")
+                    extraRecordDetailNode.appendChild extraRecordIdDocsNode
+
+                    'Document tag/node (Identity Documents) creation + all elements
+                    If Not IsNull(.Fields("sedol").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("SEDOL", .Fields("sedol").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("cins").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("CINS", .Fields("cins").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("austrian").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("AUSTRIAN", .Fields("austrian").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("belgian").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("BELGIAN", .Fields("belgian").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("canadian").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("CANADIAN", .Fields("canadian").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("german").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("GERMAN", .Fields("german").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("denmark").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("DENMARK", .Fields("denmark").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("france_rga").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("FRANCE_RGA", .Fields("france_rga").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("france_euroclear").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("FRANCE_EUROCLEAR", .Fields("france_euroclear").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("italian").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("ITALIAN", .Fields("italian").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("japanese_current").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("JAPANESE_CURRENT", .Fields("japanese_current").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("japanese_new").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("JAPANESE_NEW", .Fields("japanese_new").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("luxembourg").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("LUXEMBOURG", .Fields("luxembourg").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("netherland").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("NETHERLAND", .Fields("netherland").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("norwegian").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("NORWEGIAN", .Fields("norwegian").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("swedish").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("SWEDISH", .Fields("swedish").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("xs_int_number").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("XS_INT_NUMBER", .Fields("xs_int_number").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("portugal").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("PORTUGAL", .Fields("portugal").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("south_korea").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("SOUTH_KOREA", .Fields("south_korea").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("hong_kong").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("HONG_KONG", .Fields("hong_kong").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("bloomberg_id").Value) Then
+
+                        extraRecordIdDocsNode.appendChild CreateDocumentNode("BLOOMBERG_ID", .Fields("bloomberg_id").Value)
+
+                    End If
+
+                    'Country Details tag/node (extra All Records Type Details) creation
+                    Set extraRecordCountryDetailsNode = xmlDoc.createElement("countryDetails")
+                    extraRecordDetailNode.appendChild extraRecordCountryDetailsNode
+
+                    'Dates Details tag/node (extra All Records Type Details) creation
+                    Set extraRecordDatesDetailsNode = xmlDoc.createElement("datesDetails")
+                    extraRecordDetailNode.appendChild extraRecordDatesDetailsNode
+
+                    'Aliases tag/node (extra All Records Type Details) creation
+                    Set extraRecordAliasesNode = xmlDoc.createElement("aliases")
+                    extraRecordDetailNode.appendChild extraRecordAliasesNode
+
+                        'Codes tag/node (extra All Records Type Details) creation
+                        Set extraRecordCodesNode = xmlDoc.createElement("codes")
+                        extraRecordDetailNode.appendChild extraRecordCodesNode
+
+                        'Adding ISIN code to Codes node
+                        extraRecordCodesNode.appendChild CreateCodeNode(.Fields("isin").Value, "ISIN")
+
+                        'If CUSIP code was provided...
+                        If Not IsNull(.Fields("cusip").Value) Then
+
+                            '... Adding the CUSIP code to the Codes node
+                            extraRecordCodesNode.appendChild CreateCodeNode(.Fields("cusip").Value, "CUSIP")
+
+                        End If
+
+                        'Relations tag/node (extra All Records Type Details) creation
+                        Set extraRecordRelationsNode = xmlDoc.createElement("relations")
+                        extraRecordDetailNode.appendChild extraRecordRelationsNode
+
+                    End If 'This is the closing End If for a new Record ISIN.
+
+                    'What follows is done for any row of the Recordset. It adds only distinct values to the different array buffers, which will be concatenated at the next change of ISIN code
+                    'The detailed example here-below on the Link Entity is then applied for all other columns that may have many information split over many rows.
+                    'But since some rows may have the same information and since we need each information only once, therefore we need to single them out
+
+                    'If the current row provides a Link Entity and this Link Entity has not yet been provided before for the current Record...
+                    If Not IsNull(.Fields("link_entity").Value) And Not isin(Nz(.Fields("link_entity").Value, vbNullString), Join(asLinkEntities, "|")) Then
+
+                        '... if the last cell of the Link Entities array buffer is already filled...
+                        If asLinkEntities(iMaxArrayLinkEntities) <> vbNullString Then
+
+                            '... extend the Link Entites array buffer by 1 cell, keeping the array's content
+                            iMaxArrayLinkEntities = iMaxArrayLinkEntities + 1
+                            ReDim Preserve asLinkEntities(iMaxArrayLinkEntities) As String
+
+                        End If
+
+                        '... add the new Link Entity in the last cell of the Link Entities array buffer
+                        asLinkEntities(iMaxArrayLinkEntities) = .Fields("link_entity").Value
+
+                    End If
+
+                    'As explained, from here, the same logic applies to all the columns which may contain many information over many columns
+                    'Proper reconcatenation of those information will occur at the beginning of the loop, when the ISIN code changes (or after the loop for the last ISIN/row)
+                    If Not IsNull(.Fields("link_csid").Value) And Not isin(Nz(.Fields("link_csid").Value, vbNullString), Join(asLinkCSIDs, "|")) Then
+
+                        If asLinkCSIDs(iMaxArrayLinkCSIDs) <> vbNullString Then
+
+                            iMaxArrayLinkCSIDs = iMaxArrayLinkCSIDs + 1
+                            ReDim Preserve asLinkCSIDs(iMaxArrayLinkCSIDs) As String
+
+                        End If
+
+                        asLinkCSIDs(iMaxArrayLinkCSIDs) = .Fields("link_csid").Value
+
+                    End If
+
+                    If .Fields("sanctioned_parent_entity").Value <> vbNullString And Not isin(.Fields("sanctioned_parent_entity").Value, Join(asSanctionedParentEntities, "|")) Then
+
+                        If asSanctionedParentEntities(iMaxArraySanctionedParentEntities) <> vbNullString Then
+
+                            iMaxArraySanctionedParentEntities = iMaxArraySanctionedParentEntities + 1
+                            ReDim Preserve asSanctionedParentEntities(iMaxArraySanctionedParentEntities) As String
+
+                        End If
+
+                        asSanctionedParentEntities(iMaxArraySanctionedParentEntities) = .Fields("sanctioned_parent_entity").Value
+
+                    End If
+
+                    If .Fields("confidence_level").Value <> vbNull And Not isin(CStr(.Fields("confidence_level").Value), Join(asConfidenceLevels, "|")) Then
+
+                        If asConfidenceLevels(iMaxArrayConfidenceLevels) <> vbNullString Then
+
+                            iMaxArrayConfidenceLevels = iMaxArrayConfidenceLevels + 1
+                            ReDim Preserve asConfidenceLevels(iMaxArrayConfidenceLevels) As String
+
+                        End If
+
+                        asConfidenceLevels(iMaxArrayConfidenceLevels) = CStr(.Fields("confidence_level").Value)
+
+                    End If
+
+                    If Not IsNull(.Fields("instr_name").Value) And Not isin(Nz(.Fields("instr_name").Value, vbNullString), Join(asInstrNames, "|")) Then
+
+                        If asInstrNames(iMaxArrayInstrNames) <> vbNullString Then
+
+                            iMaxArrayInstrNames = iMaxArrayInstrNames + 1
+                            ReDim Preserve asInstrNames(iMaxArrayInstrNames) As String
+
+                        End If
+
+                        asInstrNames(iMaxArrayInstrNames) = .Fields("instr_name").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("indicative_issue_date").Value) Then
+
+                        If Not isin(FormatDateToProperStringDate(.Fields("indicative_issue_date").Value), Join(asIndicativeIssueDates, "|")) Then
+
+                            If asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) <> vbNullString Then
+
+                                iMaxArrayIndicativeIssueDates = iMaxArrayIndicativeIssueDates + 1
+                                ReDim Preserve asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) As String
+
+                            End If
+
+                            asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) = FormatDateToProperStringDate(.Fields("indicative_issue_date").Value)
+
+                        End If
+                    End If
+
+                    If Not IsNull(.Fields("instrument_type").Value) And Not isin(Nz(.Fields("instrument_type").Value, vbNullString), Join(asInstrumentTypes, "|")) Then
+
+                        If asInstrumentTypes(iMaxArrayInstrumentTypes) <> vbNullString Then
+
+                            iMaxArrayInstrumentTypes = iMaxArrayInstrumentTypes + 1
+                            ReDim Preserve asInstrumentTypes(iMaxArrayInstrumentTypes) As String
+
+                        End If
+
+                        asInstrumentTypes(iMaxArrayInstrumentTypes) = .Fields("instrument_type").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("sanctions_relevant_asset_class").Value) And Not isin(Nz(.Fields("sanctions_relevant_asset_class").Value, vbNullString), Join(asSanctionsRelevantAssetClasses, "|")) Then
+
+                        If asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) <> vbNullString Then
+
+                            iMaxArraySanctionsRelevantAssetClasses = iMaxArraySanctionsRelevantAssetClasses + 1
+                            ReDim Preserve asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) As String
+
+                        End If
+
+                        asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) = .Fields("sanctions_relevant_asset_class").Value
+
+                    End If
+
+                    If .Fields("main_instrument").Value <> vbNullString And Not isin(.Fields("main_instrument").Value, Join(asMainInstruments, "|")) Then
+
+                        If asMainInstruments(iMaxArrayMainInstruments) <> vbNullString Then
+
+                            iMaxArrayMainInstruments = iMaxArrayMainInstruments + 1
+                            ReDim Preserve asMainInstruments(iMaxArrayMainInstruments) As String
+
+                        End If
+
+                        asMainInstruments(iMaxArrayMainInstruments) = .Fields("main_instrument").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("equity_type_of_issuance").Value) And Not isin(Nz(.Fields("equity_type_of_issuance").Value, vbNullString), Join(asEquityTypesOfIssuances, "|")) Then
+
+                        If asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) <> vbNullString Then
+
+                            iMaxArrayEquityTypesOfIssuances = iMaxArrayEquityTypesOfIssuances + 1
+                            ReDim Preserve asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) As String
+
+                        End If
+
+                        asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) = .Fields("equity_type_of_issuance").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("denomination_currency").Value) And Not isin(Nz(.Fields("denomination_currency").Value, vbNullString), Join(asDenominationCurrencies, "|")) Then
+
+                        If asDenominationCurrencies(iMaxArrayDenominationCurrencies) <> vbNullString Then
+
+                            iMaxArrayDenominationCurrencies = iMaxArrayDenominationCurrencies + 1
+                            ReDim Preserve asDenominationCurrencies(iMaxArrayDenominationCurrencies) As String
+
+                        End If
+
+                        asDenominationCurrencies(iMaxArrayDenominationCurrencies) = .Fields("denomination_currency").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("maturity_date").Value) Then
+
+                        If Not isin(FormatDateToProperStringDate(.Fields("maturity_date").Value), Join(asMaturityDates, "|")) Then
+
+                            If asMaturityDates(iMaxArrayMaturityDates) <> vbNullString Then
+
+                                iMaxArrayMaturityDates = iMaxArrayMaturityDates + 1
+                                ReDim Preserve asMaturityDates(iMaxArrayMaturityDates) As String
+
+                            End If
+
+                            asMaturityDates(iMaxArrayMaturityDates) = FormatDateToProperStringDate(.Fields("maturity_date").Value)
+
+                        End If
+                    End If
+
+                    If Not IsNull(.Fields("debt_lifetime_in_days").Value) And Not isin(Nz(.Fields("debt_lifetime_in_days").Value, vbNullString), Join(asDebtsLifetimeInDays, "|")) Then
+
+                        If asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) <> vbNullString Then
+
+                            iMaxArrayDebtsLifetimeInDays = iMaxArrayDebtsLifetimeInDays + 1
+                            ReDim Preserve asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) As String
+
+                        End If
+
+                        asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) = .Fields("debt_lifetime_in_days").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("active_flag").Value) And Not isin(Nz(.Fields("active_flag").Value, vbNullString), Join(asActiveFlags, "|")) Then
+
+                        If asActiveFlags(iMaxArrayActiveFlags) <> vbNullString Then
+
+                            iMaxArrayActiveFlags = iMaxArrayActiveFlags + 1
+                            ReDim Preserve asActiveFlags(iMaxArrayActiveFlags) As String
+
+                        End If
+
+                        asActiveFlags(iMaxArrayActiveFlags) = .Fields("active_flag").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("issue_date").Value) Then
+
+                        If Not isin(FormatDateToProperStringDate(.Fields("issue_date").Value), Join(asIssueDates, "|")) Then
+
+                            If asIssueDates(iMaxArrayIssueDates) <> vbNullString Then
+
+                                iMaxArrayIssueDates = iMaxArrayIssueDates + 1
+                                ReDim Preserve asIssueDates(iMaxArrayIssueDates) As String
+
+                            End If
+
+                            asIssueDates(iMaxArrayIssueDates) = FormatDateToProperStringDate(.Fields("issue_date").Value)
+
+                        End If
+                    End If
+
+                    If Not IsNull(.Fields("capital_change_date").Value) Then
+
+                        If Not isin(FormatDateToProperStringDate(.Fields("capital_change_date").Value), Join(asCapitalChangeDates, "|")) Then
+
+                            If asCapitalChangeDates(iMaxArrayCapitalChangeDates) <> vbNullString Then
+
+                                iMaxArrayCapitalChangeDates = iMaxArrayCapitalChangeDates + 1
+                                ReDim Preserve asCapitalChangeDates(iMaxArrayCapitalChangeDates) As String
+
+                            End If
+
+                            asCapitalChangeDates(iMaxArrayCapitalChangeDates) = FormatDateToProperStringDate(.Fields("capital_change_date").Value)
+
+                        End If
+                    End If
+
+                    If Not IsNull(.Fields("description").Value) And Not isin(Nz(.Fields("description").Value, vbNullString), Join(asDescriptions, "|")) Then
+
+                        If asDescriptions(iMaxArrayDescriptions) <> vbNullString Then
+
+                            iMaxArrayDescriptions = iMaxArrayDescriptions + 1
+                            ReDim Preserve asDescriptions(iMaxArrayDescriptions) As String
+
+                        End If
+
+                        asDescriptions(iMaxArrayDescriptions) = .Fields("description").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("expiry_date").Value) Then
+
+                        If Not isin(FormatDateToProperStringDate(.Fields("expiry_date").Value), Join(asExpiryDates, "|")) Then
+
+                            If asExpiryDates(iMaxArrayExpiryDates) <> vbNullString Then
+
+                                iMaxArrayExpiryDates = iMaxArrayExpiryDates + 1
+                                ReDim Preserve asExpiryDates(iMaxArrayExpiryDates) As String
+
+                            End If
+
+                            asExpiryDates(iMaxArrayExpiryDates) = FormatDateToProperStringDate(.Fields("expiry_date").Value)
+
+                        End If
+                    End If
+
+                    If .Fields("underlying_ch").Value <> vbNullString And Not isin(.Fields("underlying_ch").Value, Join(asUnderlyingCHs, "|")) Then
+
+                        If asUnderlyingCHs(iMaxArrayUnderlyingCHs) <> vbNullString Then
+
+                            iMaxArrayUnderlyingCHs = iMaxArrayUnderlyingCHs + 1
+                            ReDim Preserve asUnderlyingCHs(iMaxArrayUnderlyingCHs) As String
+
+                        End If
+
+                        asUnderlyingCHs(iMaxArrayUnderlyingCHs) = .Fields("underlying_ch").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("underlying_isin").Value) And Not isin(Nz(.Fields("underlying_isin").Value, vbNullString), Join(asUnderlyingISINs, "|")) Then
+
+                        If asUnderlyingISINs(iMaxArrayUnderlyingISINs) <> vbNullString Then
+
+                            iMaxArrayUnderlyingISINs = iMaxArrayUnderlyingISINs + 1
+                            ReDim Preserve asUnderlyingISINs(iMaxArrayUnderlyingISINs) As String
+
+                        End If
+
+                        asUnderlyingISINs(iMaxArrayUnderlyingISINs) = .Fields("underlying_isin").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("underlying_issuer_gk").Value) And Not isin(Nz(.Fields("underlying_issuer_gk").Value, vbNullString), Join(asUnderlyingIssuersGKs, "|")) Then
+
+                        If asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) <> vbNullString Then
+
+                            iMaxArrayUnderlyingIssuersGKs = iMaxArrayUnderlyingIssuersGKs + 1
+                            ReDim Preserve asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) As String
+
+                        End If
+
+                        asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) = .Fields("underlying_issuer_gk").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("underlying_issuer_name").Value) And Not isin(Nz(.Fields("underlying_issuer_name").Value, vbNullString), Join(asUnderlyingIssuersNames, "|")) Then
+
+                        If asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) <> vbNullString Then
+
+                            iMaxArrayUnderlyingIssuersNames = iMaxArrayUnderlyingIssuersNames + 1
+                            ReDim Preserve asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) As String
+
+                        End If
+
+                        asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) = .Fields("underlying_issuer_name").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("fisn").Value) And Not isin(Nz(.Fields("fisn").Value, vbNullString), Join(asFISNs, "|")) Then
+
+                        If asFISNs(iMaxArrayFISNs) <> vbNullString Then
+
+                            iMaxArrayFISNs = iMaxArrayFISNs + 1
+                            ReDim Preserve asFISNs(iMaxArrayFISNs) As String
+
+                        End If
+
+                        asFISNs(iMaxArrayFISNs) = .Fields("fisn").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("reason_for_change").Value) And Not isin(Nz(.Fields("reason_for_change").Value, vbNullString), Join(asReasonsForChange, "|")) Then
+
+                        If asReasonsForChange(iMaxArrayReasonsForChange) <> vbNullString Then
+
+                            iMaxArrayReasonsForChange = iMaxArrayReasonsForChange + 1
+                            ReDim Preserve asReasonsForChange(iMaxArrayReasonsForChange) As String
+
+                        End If
+
+                        asReasonsForChange(iMaxArrayReasonsForChange) = .Fields("reason_for_change").Value
+
+                    End If
+
+                    If Not IsNull(.Fields("sanctions_rationale").Value) And Not isin(Nz(.Fields("sanctions_rationale").Value, vbNullString), Join(asSanctionsRationale, "|")) Then
+
+                        If asSanctionsRationale(iMaxArraySanctionsRationale) <> vbNullString Then
+
+                            iMaxArraySanctionsRationale = iMaxArraySanctionsRationale + 1
+                            ReDim Preserve asSanctionsRationale(iMaxArraySanctionsRationale) As String
+
+                        End If
+
+                        asSanctionsRationale(iMaxArraySanctionsRationale) = .Fields("sanctions_rationale").Value
+
+                    End If
+                    'Here ends the "out singling" of the multi-rows information
+
+                    'Program tag/node (Programs) creation
+                    'If the Export is for EU/US regimes (CMIC - EU/US ISIN - USPP ISIN)...
+                    If iProgramExport = 1 Or iProgramExport = 3 Then
+
+                        'If EU regime is defined (contains something, which is a program)...
+                        If Not IsNull(.Fields("eu").Value) Then
+
+                            '... and if the EU program/regime node doesn't already exist with the current row's program...
+                            If Not ExistProgramNode(programsNode, "EU", .Fields("eu").Value, .Fields("target").Value) Then
+
+                                '... creation of a new Program node for EU regime, with current row's Program as value
+                                programsNode.appendChild CreateProgramNode("EU", .Fields("eu").Value, .Fields("target").Value)
+
+                            End If
+
+                            'If EU regime is not already in as one of the Search Codes...
+                            If Not isin("EU", Join(asSearchCodes, "|")) Then
+
+                                '... if the Search Codes array buffer last row is not empty...
+                                If asSearchCodes(iMaxArraySearchCodes) <> vbNullString Then
+
+                                    '... extend the Search Code array buffer by 1 cell
+                                    iMaxArraySearchCodes = iMaxArraySearchCodes + 1
+                                    ReDim Preserve asSearchCodes(iMaxArraySearchCodes) As String
+
+                                End If
+
+                                'Put EU regime as last Search Code (in the last cell of the array buffer)
+                                asSearchCodes(iMaxArraySearchCodes) = "EU"
+
+                            End If
+                        End If
+
+                        'Same as EU regime
+                        If Not IsNull(.Fields("us_sdn").Value) Then
+
+                            If Not ExistProgramNode(programsNode, "US_SDN", .Fields("us_sdn").Value, .Fields("target").Value) Then
+
+                                programsNode.appendChild CreateProgramNode("US_SDN", .Fields("us_sdn").Value, .Fields("target").Value)
+
+                            End If
+
+                            If Not isin("US_SDN", Join(asSearchCodes, "|")) Then
+
+                                If asSearchCodes(iMaxArraySearchCodes) <> vbNullString Then
+
+                                    iMaxArraySearchCodes = iMaxArraySearchCodes + 1
+                                    ReDim Preserve asSearchCodes(iMaxArraySearchCodes) As String
+
+                                End If
+
+                                asSearchCodes(iMaxArraySearchCodes) = "US_SDN"
+
+                            End If
+                        End If
+
+                        If Not IsNull(.Fields("us_non_sdn").Value) Then
+
+                            If Not ExistProgramNode(programsNode, "US_NON_SDN", .Fields("us_non_sdn").Value, .Fields("target").Value) Then
+
+                                programsNode.appendChild CreateProgramNode("US_NON_SDN", .Fields("us_non_sdn").Value, .Fields("target").Value)
+
+                            End If
+
+                            If Not isin("US_NON_SDN", Join(asSearchCodes, "|")) Then
+
+                                If asSearchCodes(iMaxArraySearchCodes) <> vbNullString Then
+
+                                    iMaxArraySearchCodes = iMaxArraySearchCodes + 1
+                                    ReDim Preserve asSearchCodes(iMaxArraySearchCodes) As String
+
+                                End If
+
+                                asSearchCodes(iMaxArraySearchCodes) = "US_NON_SDN"
+
+                            End If
+                        End If
+                    End If
+
+                    If Not IsNull(.Fields("uk").Value) And (iProgramExport = 2) Then
+
+                        If Not ExistProgramNode(programsNode, "UK", .Fields("uk").Value, .Fields("target").Value) Then
+
+                            programsNode.appendChild CreateProgramNode("UK", .Fields("uk").Value, .Fields("target").Value)
+
+
+
+                        End If
+
+                        If Not isin("UK", Join(asSearchCodes, "|")) Then
+
+                            If asSearchCodes(iMaxArraySearchCodes) <> vbNullString Then
+
+                                iMaxArraySearchCodes = iMaxArraySearchCodes + 1
+                                ReDim Preserve asSearchCodes(iMaxArraySearchCodes) As String
+
+                            End If
+
+                            asSearchCodes(iMaxArraySearchCodes) = "UK"
+
+                        End If
+                    End If
+
+                    'Sorting programs alphabetically.
+
+
+                    sPreviousIsin = .Fields("isin").Value
+                    iPreviousRsfId = .Fields("rsf_id").Value
+
+
+
+
+
+                    .MoveNext
+
+                Loop
+
+
+
+                'To manage the concatenated information of last row that won't go in the loop and so would be discarded otherwise
+                If asLinkEntities(iMaxArrayLinkEntities) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "link_entity : " & Join(asLinkEntities, " - ")
+
+                End If
+
+                If asLinkCSIDs(iMaxArrayLinkCSIDs) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & IIf(iPreviousRsfId = 0, "link_csid", IIf(iPreviousRsfId = 1, "issuer_gk", "host_gk")) & " : " & Join(asLinkCSIDs, " - ")
+
+                End If
+
+                If asSanctionedParentEntities(iMaxArraySanctionedParentEntities) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "sanctioned_parent_entity : " & Join(asSanctionedParentEntities, " - ")
+
+                End If
+
+                If asConfidenceLevels(iMaxArrayConfidenceLevels) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "confidence_level : " & Join(asConfidenceLevels, " - ")
+
+                End If
+
+                If asInstrNames(iMaxArrayInstrNames) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "instr_name : " & Join(asInstrNames, " - ")
+
+                End If
+
+                If asIndicativeIssueDates(iMaxArrayIndicativeIssueDates) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "indicative_issue_date : " & Join(asIndicativeIssueDates, " - ")
+
+                End If
+
+                If asInstrumentTypes(iMaxArrayInstrumentTypes) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "instrument_type : " & Join(asInstrumentTypes, " - ")
+
+                End If
+
+                If asSanctionsRelevantAssetClasses(iMaxArraySanctionsRelevantAssetClasses) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "sanctions_relevant_asset_class : " & Join(asSanctionsRelevantAssetClasses, " - ")
+
+                End If
+
+                If asMainInstruments(iMaxArrayMainInstruments) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "main_instrument : " & Join(asMainInstruments, " - ")
+
+                End If
+
+                If asEquityTypesOfIssuances(iMaxArrayEquityTypesOfIssuances) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "equity_type_of_issuance : " & Join(asEquityTypesOfIssuances, " - ")
+
+                End If
+
+                If asDenominationCurrencies(iMaxArrayDenominationCurrencies) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "denomination_currency : " & Join(asDenominationCurrencies, " - ")
+
+                End If
+
+                If asMaturityDates(iMaxArrayMaturityDates) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "maturity_date : " & Join(asMaturityDates, " - ")
+
+                End If
+
+                If asDebtsLifetimeInDays(iMaxArrayDebtsLifetimeInDays) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "debt_lifetime_in_days : " & Join(asDebtsLifetimeInDays, " - ")
+
+                End If
+                If asActiveFlags(iMaxArrayActiveFlags) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "active_flag : " & Join(asActiveFlags, " - ")
+
+                End If
+
+                If asIssueDates(iMaxArrayIssueDates) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "issue_date : " & Join(asIssueDates, " - ")
+
+                End If
+
+                If asCapitalChangeDates(iMaxArrayCapitalChangeDates) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "capital_change_date : " & Join(asCapitalChangeDates, " - ")
+
+                End If
+
+                If asDescriptions(iMaxArrayDescriptions) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "description : " & Join(asDescriptions, " - ")
+
+                End If
+
+                If asExpiryDates(iMaxArrayExpiryDates) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "expiry_date : " & Join(asExpiryDates, " - ")
+
+                End If
+
+                If asUnderlyingCHs(iMaxArrayUnderlyingCHs) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "underlying_ch : " & Join(asUnderlyingCHs, " - ")
+
+                End If
+
+                If asUnderlyingISINs(iMaxArrayUnderlyingISINs) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "underlying_isin : " & Join(asUnderlyingISINs, " - ")
+
+                End If
+
+                If asUnderlyingIssuersGKs(iMaxArrayUnderlyingIssuersGKs) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & IIf(iPreviousRsfId = 1, "underlying_issuer_gk", "underlying_gk") & " : " & Join(asUnderlyingIssuersGKs, " - ")
+
+                End If
+
+                If asUnderlyingIssuersNames(iMaxArrayUnderlyingIssuersNames) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & IIf(iPreviousRsfId = 1, "underlying_issuer_name", "underlying_issuer_shortname") & " : " & Join(asUnderlyingIssuersNames, " - ")
+
+                End If
+
+                If asFISNs(iMaxArrayFISNs) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "FISN Instrument short name : " & Join(asFISNs, " - ")
+
+                End If
+
+                If asReasonsForChange(iMaxArrayReasonsForChange) <> vbNullString Then
+
+                    recordGiNotesEl.Text = recordGiNotesEl.Text & IIf(recordGiNotesEl.Text <> vbNullString, "; ", vbNullString) & "reasons_for_change : " & Join(asReasonsForChange, " - ")
+
+                End If
+
+                If recordGiNotesEl.Text <> vbNullString Then
+
+                    recordGiNotesEl.Text = sHeaderRecordNotes & recordGiNotesEl.Text
+
+                End If
+
+                If asSanctionsRationale(iMaxArraySanctionsRationale) <> vbNullString Then
+
+                    recordGiCommentsEl.Text = "sanctions_rationale : " & Join(asSanctionsRationale, " | ")
+
+                End If
+
+                If asSearchCodes(iMaxArraySearchCodes) <> vbNullString Then
+                    If iMaxArraySearchCodes >= 1 Then
+                        QuickSort asSearchCodes, 0, UBound(asSearchCodes)
+                    End If
+                    recordGiSearchCodeEl.Text = Join(asSearchCodes, " ")
+
+                End If
+            End If
+        End With
+
+        Set rsSixIsin = Nothing
+
+        Set xslDoc = New MSXML2.DOMDocument60
+        Set xmlFormattedDoc = New MSXML2.DOMDocument60
+
+        xslDoc.LoadXML "<?xml version=""1.0"" ?>" & vbCrLf & _
+                       vbTab & "<xsl:stylesheet version=""1.0"" xmlns:xsl=""http://www.w3.org/1999/XSL/Transform"">" & vbCrLf & _
+                       vbTab & vbTab & "<xsl:strip-space elements=""*"" />" & vbCrLf & _
+                       vbTab & vbTab & "<xsl:output method=""xml"" indent=""yes"" encoding=""UTF-8"" />" & vbCrLf & _
+                       vbTab & vbTab & "<xsl:template match=""node() | @*"">" & vbCrLf & _
+                       vbTab & vbTab & vbTab & "<xsl:copy>" & vbCrLf & _
+                       vbTab & vbTab & vbTab & vbTab & "<xsl:apply-templates select=""node() | @*"" />" & vbCrLf & _
+                       vbTab & vbTab & vbTab & "</xsl:copy>" & vbCrLf & _
+                       vbTab & vbTab & "</xsl:template>" & vbCrLf & _
+                       vbTab & "</xsl:stylesheet>"
+
+        xslDoc.async = False
+
+        xmlDoc.transformNodeToObject xslDoc, xmlFormattedDoc
+
+        xmlFormattedDoc.Save sExportFolder & "\" & sFileSave
+
+            ExportXML = sExportFolder & "\" & sFileSave
+
+            Set xmlFormattedDoc = Nothing
+            Set xslDoc = Nothing
+            Set recordsNode = Nothing
+            Set listTypeEl = Nothing
+            Set listSourceVersionEl = Nothing
+            Set listLabelEl = Nothing
+            Set listJuridictionBaseEl = Nothing
+            Set listApplicationDateEl = Nothing
+            Set listNode = Nothing
+
+        ElseIf bIsFileOpen Then
+
+            MsgBox "Le fichier" & vbCrLf & vbCrLf & sExportFolder & "\" & sFileSave & vbCrLf & vbCrLf & "existe déjà et est déjà ouvert par une application Microsoft Office. Il ne peut être exporté tant que c'est le cas." & vbCrLf & "Veuillez le fermer et recommencer.", vbExclamation + vbOKOnly, "Fichier déjà ouvert"
+            ExportXML = "ERR_EXISTS_NO_OVERWRITE"
+
+        ElseIf bIsFileExist And Not bOverwriteFile Then
+
+            MsgBox "Vous avez choisi de ne pas écraser le fichier existant :" & vbCrLf & vbCrLf & sExportFolder & "\" & sFileSave & vbCrLf & vbCrLf & "Il a donc été conservé.", vbInformation + vbOKOnly, "Fichier existant conservé"
+            ExportXML = "ERR_EXISTS_AND_OPENED"
+
+        End If
+    Else
+
+        MsgBox "Le chemin de sauvegarde " & vbCrLf & vbCrLf & vbTab & sExportFolder & vbCrLf & vbCrLf & "pour la liste " & vbCrLf & vbCrLf & vbTab & asTypeExport(iTypeExport, 3) & sGeolocXMLFilenamePattern & vbCrLf & vbCrLf & "est trop long (> 247 caractères). Il ne peut pas être sauvegardé. Merci de sélectionner un autre dossier pour cette liste (<= 247 caractères, nom de fichier inclus).", vbExclamation + vbOKOnly, "Impossible d'enregistrer"
+        ExportXML = "ERR_PATH_TOO_LONG"
+
+    End If
+    Form_Dashboard.lblProgressStep.Caption = ""
+    Set xmlDoc = Nothing
+
+End Function
+
+' Returns a Regliss V4 XML compliant "document" node/object
+Private Function CreateDocumentNode(ByVal sDocNodeName As String, ByVal sDocNodeValue As String) As IXMLDOMElement
+
+    Dim documentNode, identityDocTypeEl, identityDocIssueDateEl, identityDocExpirationDateEl, identityDocCountryEl, identityDocAdditionalInfoEl, identityDocNumberEl As IXMLDOMElement
+
+    Set documentNode = xmlDoc.createElement("document")
+
+    Set identityDocTypeEl = xmlDoc.createElement("type")
+    identityDocTypeEl.Text = "Others"
+    documentNode.appendChild identityDocTypeEl
+
+    Set identityDocIssueDateEl = xmlDoc.createElement("issueDate")
+    documentNode.appendChild identityDocIssueDateEl
+
+    Set identityDocExpirationDateEl = xmlDoc.createElement("expirationDate")
+    documentNode.appendChild identityDocExpirationDateEl
+
+    Set identityDocCountryEl = xmlDoc.createElement("country")
+    documentNode.appendChild identityDocCountryEl
+
+    Set identityDocAdditionalInfoEl = xmlDoc.createElement("additionalInfo")
+    identityDocAdditionalInfoEl.Text = "Instrument Identifier " & sDocNodeName
+    documentNode.appendChild identityDocAdditionalInfoEl
+
+    Set identityDocNumberEl = xmlDoc.createElement("number")
+    identityDocNumberEl.Text = sDocNodeValue
+    documentNode.appendChild identityDocNumberEl
+
+    Set CreateDocumentNode = documentNode
+
+
+
+    Set identityDocNumberEl = Nothing
+    Set identityDocAdditionalInfoEl = Nothing
+    Set identityDocCountryEl = Nothing
+    Set identityDocExpirationDateEl = Nothing
+    Set identityDocIssueDateEl = Nothing
+    Set identityDocTypeEl = Nothing
+    Set documentNode = Nothing
+
+
+
+End Function
+
+' Returns a Regliss V4 XML compliant "code" node/object
+Private Function CreateCodeNode(ByVal sCodeValue As String, ByVal sCodeType As String) As IXMLDOMElement
+
+    Dim codeNode, codeValueEl, codeTypeEl As IXMLDOMElement
+    Dim sanctionElIdAtt As IXMLDOMAttribute
+
+    Set codeNode = xmlDoc.createElement("code")
+
+    Set codeValueEl = xmlDoc.createElement("value")
+    codeValueEl.Text = sCodeValue
+    codeNode.appendChild codeValueEl
+
+    Set codeTypeEl = xmlDoc.createElement("type")
+    codeTypeEl.Text = sCodeType
+    codeNode.appendChild codeTypeEl
+
+    Set CreateCodeNode = codeNode
+
+
+    Set codeTypeEl = Nothing
+    Set codeValueEl = Nothing
+    Set codeNode = Nothing
+
+End Function
+
+' Returns True if the provided Programs node already contains the also provided program as child-node
+Private Function ExistProgramNode(ByVal xmlElProgramsNode As IXMLDOMElement, ByVal sProgramType As String, ByVal sProgramLabel As String, ByVal sTarget As String) As Boolean
+
+    Dim xmlElProgram As IXMLDOMElement
+
+    ExistProgramNode = False
+
+    If xmlElProgramsNode.HasChildNodes Then
+
+        For Each xmlElProgram In xmlElProgramsNode.ChildNodes
+
+            If xmlElProgram.getElementsByTagName("label").Item(0).nodeTypedValue = sProgramType & " - " & sProgramLabel And xmlElProgram.getElementsByTagName("description").Item(0).nodeTypedValue = sTarget Then
+
+                ExistProgramNode = True
+                Exit For
+
+            End If
+        Next
+    End If
+End Function
+
+' Returns a Regliss V4 XML compliant "program" node/object
+Private Function CreateProgramNode(ByVal sProgramType As String, ByVal sProgramLabel As String, ByVal sTarget As String) As IXMLDOMElement
+
+    Dim programNode, programLabelEl, programTypeEl, programDescriptionEl As IXMLDOMElement
+
+    Set programNode = xmlDoc.createElement("program")
+
+    'Set programIdAtt = xmlDoc.createAttribute("id")
+    'programIdAtt.Value = sProgramType
+    'programNode.setAttributeNode programIdAtt
+
+    'Label tag/element (Program) creation
+    Set programLabelEl = xmlDoc.createElement("label")
+    programLabelEl.Text = sProgramType & " - " & sProgramLabel
+    programNode.appendChild programLabelEl
+
+    'Type tag/element (Program) creation
+    Set programTypeEl = xmlDoc.createElement("type")
+    programTypeEl.Text = "BNPP Input"
+    programNode.appendChild programTypeEl
+
+    'Description tag/element (Program) creation
+    Set programDescriptionEl = xmlDoc.createElement("description")
+    programDescriptionEl.Text = sTarget
+    programNode.appendChild programDescriptionEl
+
+    Set CreateProgramNode = programNode
+
+    Set programDescriptionEl = Nothing
+    Set programTypeEl = Nothing
+    Set programLabelEl = Nothing
+    Set programNode = Nothing
+
+End Function
+
+' Returns True if the provided ISIN code has already been inserted in the SIX_ISIN table as a "to-be-kept" Instrument ISIN code
+Private Function CheckInstruIsinExists(ByVal sIsinToCheck As String) As Boolean
+
+    CheckInstruIsinExists = (CurrentDb.OpenRecordset("SELECT COUNT(*) AS nb_isin FROM SIX_ISIN WHERE isin = '" & sIsinToCheck & "' AND rsf_id = 0 AND active_flag <> 'Inactive' AND (target = 'CMIC' OR (target <> 'CMIC' AND sanctioned = 'Yes'))")!nb_isin > 0)
+
+End Function
+
+' Returns the properly Access SQL formatted US PERSONS PROHIBITION filter (to be used in the select query for XML export)
+Public Function GetUSPPISINSqlFilter() As String
+
+    Dim sSqlQuery As String
+    Dim bIsTargetSet, bIsUsNonSdnProgram1Set, bIsusNonSdnProgram2Set, bIsIsinSqlPatternSet, bIsManyRows, bIsEmpty As Boolean
+    Dim rMyRecordSet As Recordset
+
+    'Getting the all the USPP ISIN SELECT PARAMETERS (sub-filters, 1 sub-filter per row)
+    Set rMyRecordSet = CurrentDb.OpenRecordset("SELECT TRIM(uisp.target) AS target, TRIM(uisp.us_non_sdn_program1) AS us_non_sdn_program1, TRIM(uisp.us_non_sdn_program2) AS us_non_sdn_program2, TRIM(uisp.isin_sql_pattern) AS isin_sql_pattern FROM USPP_ISIN_SELECT_PARAMETERS uisp")
+
+    With rMyRecordSet
+
+        If Not (.BOF And .EOF) Then
+
+            .MoveLast
+            bIsManyRows = (.RecordCount > 1)
+            GetUSPPISINSqlFilter = IIf(bIsManyRows, "(", vbNullString)
+            .MoveFirst
+
+            Do While Not .EOF
+
+                GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & IIf(.AbsolutePosition > 0, " OR ", "") & "("
+
+                bIsTargetSet = (.Fields("target").Value <> vbNullString)
+                bIsUsNonSdnProgram1Set = (.Fields("us_non_sdn_program1").Value <> vbNullString)
+                bIsusNonSdnProgram2Set = (.Fields("us_non_sdn_program2").Value <> vbNullString)
+                bIsIsinSqlPatternSet = (.Fields("isin_sql_pattern").Value <> vbNullString)
+
+                If bIsTargetSet Then
+
+                    GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & "target = '" & .Fields("target").Value & "'"
+
+                End If
+
+                If bIsUsNonSdnProgram1Set Or bIsusNonSdnProgram2Set Then
+
+                    If bIsTargetSet Then
+
+                        GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & " AND "
+
+                    End If
+
+                    GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & "us_non_sdn"
+
+                    If bIsUsNonSdnProgram1Set And bIsusNonSdnProgram2Set Then
+
+                        GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & " IN ('" & .Fields("us_non_sdn_program1").Value & "', '" & .Fields("us_non_sdn_program2").Value & "')"
+
+                    Else
+
+                        GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & " = '" & IIf(bIsUsNonSdnProgram1Set, .Fields("us_non_sdn_program1").Value, .Fields("us_non_sdn_program2").Value) & "'"
+
+                    End If
+                End If
+
+                If bIsIsinSqlPatternSet Then
+
+                If bIsTargetSet Or bIsUsNonSdnProgram1Set Or bIsusNonSdnProgram2Set Then
+
+                    GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & " AND "
+
+                End If
+
+                GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & "isin " & .Fields("isin_sql_pattern").Value
+
+            End If
+
+            GetUSPPISINSqlFilter = GetUSPPISINSqlFilter & ")"
+
+            .MoveNext
+
+        Loop
+    End If
+
+    .Close
+
+    End With
+
+    GetUSPPISINSqlFilter = IIf(GetUSPPISINSqlFilter = vbNullString, "False", GetUSPPISINSqlFilter & IIf(bIsManyRows, ")", vbNullString))
+
+    Set rMyRecordSet = Nothing
+
+End Function
+
+' Returns True if the provided SIX filename contains the same date as the previously loaded SIX Instrument filename
+Private Function compareSixFilenameDateToInstruDate(ByVal sSixFileName As String) As Boolean
+
+    compareSixFilenameDateToInstruDate = (Left(Right(getInstruFileName, 19), 8) = Left(Right(sSixFileName, 19), 8))
+
+End Function
+
+' Sets the global string variable containing the SIX Instrument filename date with proper formatting using the function getting the SIX Intruments preloaded file's name (see below)
+Public Sub setSixFileInstruDate()
+
+    Dim sSixFileInstruDate As String
+    Dim iDay, iMonth, iYear As Integer
+
+    ' Get the date out of the filename
+    sSixFileInstruDate = Left(Right(getInstruFileName, 19), 8)
+
+    iYear = CInt(Left(sSixFileInstruDate, 4))
+    iMonth = CInt(Mid(sSixFileInstruDate, 5, 2))
+    iDay = CInt(Right(sSixFileInstruDate, 2))
+
+    dSixFileInstruDate = DateSerial(iYear, iMonth, iDay)
+
+End Sub
+
+Public Sub setSixFileInstruTime()
+
+    sSixFileInstruTime = Left(Right(getInstruFileName, 10), 6)
+
+End Sub
+
+' Returns the SIX Instrument preloaded file's name from the database
+Private Function getInstruFileName() As String
+
+    getInstruFileName = CurrentDb.OpenRecordset("SELECT six_instruments_file FROM CURRENTLY_LOADED_FILES WHERE id = 1")!six_instruments_file
+
+End Function
+
+' Opens the US PERSONS PROHIBITION filter Help document (included in the database as an attachement) with Microsoft Word
+' As of today, only 1 document is attached. This design is purely made for hypothetical evolutions with many docs to be stored
+Public Sub openUSPPFilterHelpDoc()
+
+    Dim oWordApp As Word.Application
+    Dim oWordDoc As Word.Document
+    Dim rsHelpDocsMain, rsHelpDocsChild As Recordset
+    Dim sHelpDocFileName, sTmpSavedStatus As String
+    Dim foHelpDocContent As Field
+    Dim lWindowHandler As Long
+    Const iHelpDocId As Integer = 1
+
+    ' Get the document id 1 from DOCS table in the database
+    Set rsHelpDocsMain = getDocsFromDB(iHelpDocId)
+
+    ' Use the obtained recordset (with only 1 row)...
+    With rsHelpDocsMain
+
+        ' ... and check if there actually is a row or more ...
+        If Not (.BOF And .EOF) Then
+
+            ' ... trick VBA to get the RecordCount set to the number of rows the Recordset actually contains
+            .MoveLast
+            .MoveFirst
+
+            ' ... and if there actually is only 1 row (which is what's expected)...
+            If .RecordCount = 1 Then
+
+                ' ... get the "doc_content" field, which is also a Recordset, since 1 field can contain many documents
+                Set rsHelpDocsChild = .Fields("doc_content").Value
+
+                ' ... check if that there actually is at least 1 row (= at least 1 document) in the "doc_content"...
+                If Not (rsHelpDocsChild.BOF And rsHelpDocsChild.EOF) Then
+
+                    ' ... trick VBA to get the RecordCount set to the number of rows the Recordset actually contains
+                    rsHelpDocsChild.MoveLast
+                    rsHelpDocsChild.MoveFirst
+
+                    ' If the Recordset actually contains only 1 row (= only 1 document, which is what's expected)...
+                    If rsHelpDocsChild.RecordCount = 1 Then
+
+                        ' ... get the filename and file content
+                        sHelpDocFileName = rsHelpDocsChild.Fields("FileName").Value
+                        Set foHelpDocContent = rsHelpDocsChild.Fields("FileData")
+
+                        ' Try and save the file into the user's TEMP folder and catch the status
+                        sTmpSavedStatus = saveTmpFileFromField(sHelpDocFileName, foHelpDocContent)
+
+                        ' If the file saving status is either "SAVE_OK or "ALREADY_OPENED"...
+                        If isin(sTmpSavedStatus, "SAVE_OK,ALREADY_OPENED") Then
+
+                            ' ...only if the status is "SAVE_OK"...
+                        If sTmpSavedStatus = "SAVE_OK" Then
+
+                            ' ... define a new Microsoft Word application object, open the saved file with it and make Word visible
+                            Set oWordApp = CreateObject("Word.Application")
+                            Set oWordDoc = oWordApp.Documents.Open(getEnvironTempPath & sHelpDocFileName)
+                            oWordApp.Visible = True
+
+                        End If
+
+                        ' ... in both status cases, try and put Word application window on the foreground
+                        lWindowHandler = FindWindow(vbNullString, sHelpDocFileName & " - Word")
+
+                        If lWindowHandler > 0 Then
+
+                            SetForegroundWindow lWindowHandler
+
+                        End If
+                    Else ' ... if status wasn't SAVE_OK or ALREADY_OPENED ...
+
+                        ' ... show a proper alert message
+                        MsgBox "Un souci a été rencontré avec le fichier d'aide." & vbCrLf & "Il est possible qu'il soit toujours ouvert en mémoire par une session cachée de Word." & vbCrLf & "Si c'est le cas, veuillez fermer cette session de Word et réessayer.", vbExclamation + vbOKOnly, "Erreur avec le fichier d'aide"
+
+                    End If
+                End If
+            End If
+
+            ' Close the "doc_content" Recordset
+            rsHelpDocsChild.Close
+
+        End If
+    End If
+
+    ' Close the DOCS Recordset
+    .Close
+
+    End With
+End Sub
+
+' Returns the Recordset to get the docs attached in the DOCS table
+' If a document id is provided, the Recordset will return only the expected document
+' As of today, only 1 document is attached. This design is purely made for hypothetical evolutions with many docs to be stored
+Public Function getDocsFromDB(Optional ByVal iDocId As Integer = -1) As Recordset
+
+    Set getDocsFromDB = CurrentDb.OpenRecordset("SELECT doc_content FROM DOCS" & IIf(iDocId <> -1, " WHERE doc_id = " & iDocId, vbNullString))
+
+End Function
+
+' Flushes all HDD-saved in-base attached documents
+' As of today, only 1 document is attached. This design is purely made for hypothetical evolutions with many docs to be stored
+Public Sub FlushTempDocsFromHDD()
+
+    Dim rsTempDocsMain, rsTempDocsChild As Recordset
+    Dim sFileNameFullPath As String
+
+    Set rsTempDocsMain = getDocsFromDB
+
+    With rsTempDocsMain
+
+        If Not (.BOF And .EOF) Then
+
+            .MoveLast
+            .MoveFirst
+
+            Do While Not .EOF
+
+                Set rsTempDocsChild = .Fields("doc_content").Value
+
+                If Not (rsTempDocsChild.BOF And rsTempDocsChild.EOF) Then
+
+                    rsTempDocsChild.MoveLast
+                    rsTempDocsChild.MoveFirst
+
+                    Do While Not rsTempDocsChild.EOF
+
+                        sFileNameFullPath = getEnvironTempPath & rsTempDocsChild.Fields("FileName").Value
+
+                        If isFileExist(sFileNameFullPath) Then
+
+                            removeExistingFile sFileNameFullPath
+
+                        End If
+
+                        rsTempDocsChild.MoveNext
+
+                    Loop
+
+                    rsTempDocsChild.Close
+
+                End If
+
+                .MoveNext
+
+            Loop
+
+            .Close
+
+        End If
+    End With
+End Sub
+
+' Returns an automatically generated fake ISIN code if the provided ISIN is empty
+' Uses the global constant sInstruNullIsinPattern and variable iCntInstruNullIsin
+Private Function DefineInstruNullIsin(ByVal sMyIsin As String) As String
+
+    If sMyIsin = vbNullString Then
+
+        DefineInstruNullIsin = sInstruNullIsinPattern & Right(String(6, "0") & CStr(iCntInstruNullIsin), 6)
+        iCntInstruNullIsin = iCntInstruNullIsin + 1
+
+    Else
+
+        DefineInstruNullIsin = sMyIsin
+
+    End If
+End Function
+
+'return a program node reordered by programs label
+Private Function OrderProgramsNodes(ByVal oPrograms As IXMLDOMElement) As IXMLDOMElement
+
+    'Dim programNode, programLabelEl, programTypeEl, programDescriptionEl As IXMLDOMElement
+    Dim oNewprogramsNode As IXMLDOMElement
+    Set oNewprogramsNode = xmlDoc.createElement("programs")
+
+    Dim aLabelsLists As Variant
+    Set aLabelsLists = CreateObject("System.Collections.Arraylist")
+
+    'Listing Programs labels
+    For Each Child In oPrograms.ChildNodes
+        aLabelsLists.Add Child.ChildNodes.Item(0).Text
+    Next
+
+    'Sorting Programs labels
+    QuickSort aLabelsLists, 0, (aLabelsLists.Count - 1)
+
+    'adding list in new order in new temp object
+    For Each l In aLabelsLists
+        For Each Child In oPrograms.ChildNodes
+            If Child.ChildNodes.Item(0).nodeTypedValue = l Then
+                oNewprogramsNode.appendChild Child.CloneNode(True)
+            End If
+        Next
+    Next
+
+    'returning xmlelement with ordered programs
+    Set OrderProgramsNodes = oNewprogramsNode
+
+
+    Set aLabelsLists = Nothing
+    Set oNewprogramsNode = Nothing
+
+End Function
+
+
+
+'Public procedure to import the content of a SIX CSV file into the database
+'Mandatory param is an ID to determine which file is to be uploaded, each file-type having its own set of integration rules
+Public Function AutoImportSixFile(ByVal iSixFileId As Integer, ByVal iSixFileFileNb As Integer, ByVal iSixFileFullPath As String) As Boolean
+
+    Dim sSixFileName, sSixFileNameNoPath, sSixFileIsin, sSixFileExternalReference, sSixFileActive, sSixFileSanctioned, sSixFileRefLabel, sSixFileRefLabelDetailed, _
+        sSixFileFilenamePattern, sSixFileHeader, sSqlInsertString, sSixFileLinkEntity, sSixFileLinkCsid, sSixFileNameDirectIssuer, sSixFileSanctionedParentEntity, _
+        sSixFileInstrName, sSixFileInstrumentType, sSixFileSanctionsRelevantAssetClass, sSixFileMainInstrument, sSixFileEquityTypeOfIssuance, _
+        sSixFileDenominationCurrency, sSixFileDebtLifetimeInDays, sSixFileActiveFlag, sSixFileSedol, sSixFileCusip, sSixFileCins, _
+        sSixFileAustrian, sSixFileBelgian, sSixFileCanadian, sSixFileGerman, sSixFileDenmark, sSixFileFranceRga, sSixFileFranceEuroclear, _
+        sSixFileItalian, sSixFileJapaneseCurrent, sSixFileJapaneseNew, sSixFileLuxembourg, sSixFileNetherland, sSixFileNorwegian, _
+        sSixFileSwedish, sSixFileXsIntNumber, sSixFilePortugal, sSixFileSouthKorea, sSixFileHongKong, sSixFileBloombergId, sSixFileEu, _
+        sSixFileUsSdn, sSixFileUsNonSdn, sSixFileUk, sSixFileTarget, sSixFileReasonForChange, sSixFileSanctionsRationale, sSixFileDescription, _
+        sSixFileUnderlyingCh, sSixFileUnderlyingIsin, sSixFileUnderlyingIssuerGk, sSixFileUnderlyingIssuerName, sSixFileFISN, sMsgBoxString, sComparisonFilenamePattern, mssg As String
+    Dim iSixFileIsinCol, iSixFileSanctionedCol, iSixFileLinkEntityCol, iSixFileLinkCsidCol, iSixFileNameDirectIssuerCol, iSixFileSanctionedParentEntityCol, _
+        iSixFileConfidenceLevelCol, iSixFileInstrNameCol, iSixFileExternalReferenceCol, iSixFileIndicativeIssueDateCol, iSixFileInstrumentTypeCol, _
+        iSixFileSanctionsRelevantAssetClassCol, iSixFileMainInstrumentCol, iSixFileEquityTypeOfIssuanceCol, iSixFileDenominationCurrencyCol, _
+        iSixFileMaturityDateCol, iSixFileDebtLifetimeInDaysCol, iSixFileActiveFlagCol, iSixFileIssueDateCol, iSixFileCapitalChangeDateCol, _
+        iSixFileSedolCol, iSixFileCusipCol, iSixFileCinsCol, iSixFileAustrianCol, iSixFileBelgianCol, iSixFileCanadianCol, iSixFileGermanCol, _
+        iSixFileDenmarkCol, iSixFileFranceRgaCol, iSixFileFranceEuroclearCol, iSixFileItalianCol, iSixFileJapaneseCurrentCol, iSixFileJapaneseNewCol, _
+        iSixFileLuxembourgCol, iSixFileNetherlandCol, iSixFileNorwegianCol, iSixFileSwedishCol, iSixFileXsIntNumberCol, iSixFilePortugalCol, _
+        iSixFileSouthKoreaCol, iSixFileHongKongCol, iSixFileBloombergIdCol, iSixFileEuCol, iSixFileUsSdnCol, iSixFileUsNonSdnCol, iSixFileUkCol, _
+        iSixFileTargetCol, iSixFileReasonForChangeCol, iSixFileSanctionsRationaleCol, iSixFileDescriptionCol, iSixFileExpiryDateCol, iSixFileUnderlyingChCol, _
+        iSixFileUnderlyingIsinCol, iSixFileUnderlyingIssuerGkCol, iSixFileUnderlyingIssuerNameCol, iSixFileFISNCol, iConfidenceLevel, iCurrentTaux, iPreviousTaux As Long
+    Dim iCntRows, iCurrentRowNb, timerStartValue, timerStopValue As Long
+    Dim dSixFileIndicativeIssueDate, dSixFileMaturityDate, dSixFileIssueDate, dSixFileCapitalChangeDate, dSixFileExpiryDate, currentDateTime As Date
+    Dim vaColumnsFromFile, vaRowsFromFile, vaCurrentRow As Variant
+    Dim tsFile As TextStream
+    Dim bIsCMIC, bFilesDatesMatch As Boolean
+    Dim rMyRecordSet As Recordset
+
+    AutoImportSixFile = False
+
+
+    'Getting the all the references for the param-given file type. This associates the columns names to a columns index order (index = -1 --> column absent)
+    Set rMyRecordSet = CurrentDb.OpenRecordset("SELECT * FROM REF_SOURCE_FILE WHERE rsf_id = " & iSixFileId & " AND rsf_file_nb = " & iSixFileFileNb)
+
+    'Putting all recorset's results into properly typed variables and closing recordset
+    With rMyRecordSet
+
+        sSixFileRefLabel = .Fields("rsf_ref_label").Value
+        sSixFileRefLabelDetailed = sSixFileRefLabel & " " & .Fields("rsf_ref_label_details").Value
+        sSixFileFilenamePattern = .Fields("rsf_filename_pattern").Value
+        sSixFileHeader = .Fields("rsf_header").Value
+
+        iSixFileIsinCol = .Fields("rsf_isin_column").Value
+        iSixFileActiveFlagCol = .Fields("rsf_active_flag_column").Value
+        iSixFileSanctionedCol = .Fields("rsf_sanctioned_column").Value
+        iSixFileConfidenceLevelCol = .Fields("rsf_confidence_level_column").Value
+        iSixFileExternalReferenceCol = .Fields("rsf_external_reference_column").Value
+        iSixFileTargetCol = .Fields("rsf_target_column").Value
+
+        iSixFileLinkEntityCol = .Fields("rsf_link_entity_column").Value
+        iSixFileLinkCsidCol = .Fields("rsf_link_csid_column").Value
+        iSixFileNameDirectIssuerCol = .Fields("rsf_name_direct_issuer_column").Value
+        iSixFileSanctionedParentEntityCol = .Fields("rsf_sanctioned_parent_entity_column").Value
+        iSixFileInstrNameCol = .Fields("rsf_instr_name_column").Value
+        iSixFileIndicativeIssueDateCol = .Fields("rsf_indicative_issue_date_column").Value
+        iSixFileInstrumentTypeCol = .Fields("rsf_instrument_type_column").Value
+        iSixFileSanctionsRelevantAssetClassCol = .Fields("rsf_sanctions_relevant_asset_class_column").Value
+        iSixFileMainInstrumentCol = .Fields("rsf_main_instrument_column").Value
+        iSixFileEquityTypeOfIssuanceCol = .Fields("rsf_equity_type_of_issuance_column").Value
+        iSixFileDenominationCurrencyCol = .Fields("rsf_denomination_currency_column").Value
+        iSixFileMaturityDateCol = .Fields("rsf_maturity_date_column").Value
+        iSixFileDebtLifetimeInDaysCol = .Fields("rsf_debt_lifetime_in_days_column").Value
+        iSixFileIssueDateCol = .Fields("rsf_issue_date_column").Value
+        iSixFileCapitalChangeDateCol = .Fields("rsf_capital_change_date_column").Value
+        iSixFileSedolCol = .Fields("rsf_sedol_column").Value
+        iSixFileCusipCol = .Fields("rsf_cusip_column").Value
+        iSixFileCinsCol = .Fields("rsf_cins_column").Value
+        iSixFileAustrianCol = .Fields("rsf_austrian_column").Value
+        iSixFileBelgianCol = .Fields("rsf_belgian_column").Value
+        iSixFileCanadianCol = .Fields("rsf_canadian_column").Value
+        iSixFileGermanCol = .Fields("rsf_german_column").Value
+        iSixFileDenmarkCol = .Fields("rsf_denmark_column").Value
+        iSixFileFranceRgaCol = .Fields("rsf_france_rga_column").Value
+        iSixFileFranceEuroclearCol = .Fields("rsf_france_euroclear_column").Value
+        iSixFileItalianCol = .Fields("rsf_italian_column").Value
+        iSixFileJapaneseCurrentCol = .Fields("rsf_japanese_current_column").Value
+        iSixFileJapaneseNewCol = .Fields("rsf_japanese_new_column").Value
+        iSixFileLuxembourgCol = .Fields("rsf_luxembourg_column").Value
+        iSixFileNetherlandCol = .Fields("rsf_netherland_column").Value
+        iSixFileNorwegianCol = .Fields("rsf_norwegian_column").Value
+        iSixFileSwedishCol = .Fields("rsf_swedish_column").Value
+        iSixFileXsIntNumberCol = .Fields("rsf_xs_int_number_column").Value
+        iSixFilePortugalCol = .Fields("rsf_portugal_column").Value
+        iSixFileSouthKoreaCol = .Fields("rsf_south_korea_column").Value
+        iSixFileHongKongCol = .Fields("rsf_hong_kong_column").Value
+        iSixFileBloombergIdCol = .Fields("rsf_bloomberg_id_column").Value
+        iSixFileEuCol = .Fields("rsf_eu_column").Value
+        iSixFileUsSdnCol = .Fields("rsf_us_sdn_column").Value
+        iSixFileUsNonSdnCol = .Fields("rsf_us_non_sdn_column").Value
+        iSixFileUkCol = .Fields("rsf_uk_column").Value
+        iSixFileReasonForChangeCol = .Fields("rsf_reason_for_change_column").Value
+        iSixFileSanctionsRationaleCol = .Fields("rsf_sanctions_rationale_column").Value
+        iSixFileDescriptionCol = .Fields("rsf_description_column").Value
+        iSixFileExpiryDateCol = .Fields("rsf_expiry_date_column").Value
+        iSixFileUnderlyingChCol = .Fields("rsf_underlying_ch_column").Value
+        iSixFileUnderlyingIsinCol = .Fields("rsf_underlying_isin_column").Value
+        iSixFileUnderlyingIssuerGkCol = .Fields("rsf_underlying_issuer_gk_column").Value
+        iSixFileUnderlyingIssuerNameCol = .Fields("rsf_underlying_issuer_name_column").Value
+        iSixFileFISNCol = .Fields("rsf_fisn_column").Value
+
+        .Close
+
+    End With
+
+    Set rMyRecordSet = Nothing
+
+    '... catch the filename + stripping it from its path + creating a compare pattern using the fetched SIX file filename pattern
+    sSixFileName = iSixFileFullPath
+    sSixFileNameNoPath = GetFilenameFromPath(sSixFileName)
+    sComparisonFilenamePattern = sSixAllFilenamesHeader & sSixFileFilenamePattern & sSixAllFilenamesDateTimePattern & sAllFilenamesExtension
+
+    'Checking if the selected file's name corresponds with the expected filename pattern...
+    If sSixFileNameNoPath Like sComparisonFilenamePattern Then
+
+        'If the loaded file is the SIX Instruments...
+        If iSixFileId = 0 Then
+
+            '... there is no need to compare any file date, so boolean is forced to True
+            bFilesDatesMatch = True
+
+        Else '... else, the loaded file is not SIX Instruments...
+
+            '... so the boolean gets the result of the comparison of the current SIX file (to be loaded) date and the previously loaded SIX Instrument's
+            bFilesDatesMatch = compareSixFilenameDateToInstruDate(sSixFileNameNoPath)
+
+        End If
+
+        'If SIX files dates comparison is a match...
+        If bFilesDatesMatch Then
+
+            'Checking if the file is already opened elsewhere
+            If Not IsFileOpen(sSixFileName) Then
+                timerStartValue = GetTickCount
+
+                'Set progressbar percentage to 0
+                Form_Dashboard.ProgressBar.Value = 0
+                Form_Dashboard.Etiquette79.Caption = "0 %"
+                DoEvents
+                iCntRows = countFileLines(sSixFileName)
+
+                'Define a TextStream object to read the content of the file
+                Set tsFile = CreateObject("Scripting.FileSystemObject").OpenTextFile(sSixFileName, 1, True)
+
+                With tsFile
+
+                    'Running through all the file-array rows...
+                    'For Each vaCurrentRow In vaRowsFromFile
+                    Do While Not .AtEndOfStream
+
+                        'Incrementing by 1 the currently treated row number and setting the new percentage of the whole file it represents
+                        iCurrentRowNb = .Line
+                        iCurrentTaux = CInt((iCurrentRowNb * 100) / iCntRows)
+
+                        'Reading current row (and automatically preparing for the next one to be read)
+                        vaCurrentRow = .ReadLine
+
+                        'If this is the file's 1st row...
+                        If iCurrentRowNb = 1 Then
+
+                            'Check the first row against the param-given file type header. It they differ...
+                            If vaCurrentRow <> sSixFileHeader Then
+
+                                '... Show alert message in "OK Only" dialog box accordiingly and exit procedure
+                                sMsgBoxString = "Le fichier choisi :" & vbCrLf & vbCrLf & sSixFileNameNoPath & vbCrLf & vbCrLf & "n'est pas un fichier CSV " & sSixFileRefLabelDetailed & " standard !"
+                                Eval "MsgBox (""" & sMsgBoxString & """, " & vbExclamation & ", ""Mauvais format de fichier"")"
+                                Exit Function
+
+                            Else '... if compared headers match
+
+                                '... remove all data concerning the param_given file type from database
+                                FlushSixLoadedFile iSixFileId
+                                FlushSixIsin iSixFileId
+
+                            End If
+                        ElseIf Trim(vaCurrentRow) <> vbNullString Then '... if not the first row (= 1st row of actual data) and the row isn't empty (to avoid last empty row problem)
+
+                            'Split the current row into a string array, using semi-colon as colmun separator and properly treating single quotes and in-column semi-colon (homemade Generic_Functions functions)
+                            vaColumnsFromFile = Split(DoubleInStringQuotes(RemoveInValueSemiColon(vaCurrentRow)), ";")
+
+                            'Retrieve all columns informations into properly types variables using the file-typed retrieved columns index
+                            sSixFileIsin = Trim(vaColumnsFromFile(iSixFileIsinCol))
+                            sSixFileActive = Trim(vaColumnsFromFile(iSixFileActiveFlagCol))
+                            sSixFileSanctioned = Trim(vaColumnsFromFile(iSixFileSanctionedCol))
+
+                            'If there is a column "Underlying_Ch" in the param-given file...
+                            If iSixFileUnderlyingChCol >= 0 Then
+
+                                '... we put it in the variable
+                                sSixFileUnderlyingCh = "'" & Trim(Nz(vaColumnsFromFile(iSixFileUnderlyingChCol), vbNullString)) & "'"
+
+                            Else '... if there is none
+
+                        '... we put the SQL equivalent of an empty string in the variable (not NULL because UNDERLYING_CH cannot be NULL, since it is part of the PRIMARY KEY)
+                        sSixFileUnderlyingCh = "''"
+
+                    End If
+
+                    'If there is a column "Confidence_Level" in the param_given file
+                    '(meaning the file is an INSTRUMENTS file as of today, but this could evolve, so I prefered to rely on a parameter-set test) ...
+                    If iSixFileConfidenceLevelCol >= 0 Then
+
+                        '... we store it in a variable
+                        iConfidenceLevel = vaColumnsFromFile(iSixFileConfidenceLevelCol)
+
+                    Else '... if there is no "Confidence_Level" column (OPTIONS / STRUCTURED files, as of today)...
+
+                        '... we try and fetch it from the database, which should have been previsouly populated with INSTRUMENTS file
+                        ' and OPTIONS / STRUCTURED data rely on INSTRUMENTS informations, allowing us to deduce the "Confidence_Level"
+                        Set rMyRecordSet = CurrentDb.OpenRecordset("SELECT DISTINCT confidence_level FROM SIX_ISIN WHERE rsf_id = 0 AND external_reference = " & sSixFileUnderlyingCh)
+
+                        With rMyRecordSet
+
+                            'If at least 1 record was found...
+                            If .RecordCount > 0 Then
+
+                                '... we store the 1st found INSTRUMENTS' Confidence_Level as being the current row's
+                                iConfidenceLevel = .Fields("confidence_level").Value
+
+                            Else '... if no record was found...
+
+                                '... row's Confidence_Level is set to 0
+                                iConfidenceLevel = 0
+
+                            End If
+
+                            .Close
+
+                        End With
+
+                        Set rMyRecordSet = Nothing
+                    End If
+
+                'Catching if current row is in CMIC list perimeter (or in ISIN list if not)
+                bIsCMIC = (Trim(vaColumnsFromFile(iSixFileTargetCol)) = "CMIC")
+
+                'Row filter rule :
+                '     If INSTRUMENTS file type, we keep only rows with a correct Confidence Level value, depending on the perimeter : CMIC permeter --> > 0 / ISIN permeter --> > 25
+                '     If other file type (OPTIONS / STRUCTURED), we keep only rows with :
+                '                       ISIN Code not code null
+                '                       + File column "Active" contains a value different from "Inactive"
+                '                       + ISIN Informations are not already provided by previously loaded INSTRUMENTS file (homemade Core function)
+                '                       + depending on the perimeter : CMIC perimeter --> Confidence Level > 0 / ISIN perimeter --> Confidence Level > 25 + is declared as sanctioned
+                'If row fits the criterias above...
+                If (iSixFileId = 0 _
+                    And ((bIsCMIC And iConfidenceLevel > 0) _
+                        Or (Not bIsCMIC And iConfidenceLevel > 25))) _
+                Or (iSixFileId > 0 And sSixFileIsin <> vbNullString And Not CheckInstruIsinExists(sSixFileIsin) _
+                    And ((bIsCMIC And iConfidenceLevel > 0) _
+                        Or (Not bIsCMIC And sSixFileSanctioned = "Yes" And iConfidenceLevel > 25))) Then
+
+                    '... values are gathered in typed variables. Single quotes are put around not null text values
+                    'Dates are properly formatted. Null values are replaced by unquoted plain text "NULL"
+                    'All this to match SQL text query standards
+                    sSixFileExternalReference = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileExternalReferenceCol), "NULL")))
+
+                    If iSixFileLinkEntityCol >= 0 Then
+
+                        sSixFileLinkEntity = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileLinkEntityCol), "NULL")))
+
+                    Else
+
+                        sSixFileLinkEntity = "NULL"
+
+                    End If
+
+                    sSixFileLinkCsid = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileLinkCsidCol), "NULL")))
+                    sSixFileNameDirectIssuer = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileNameDirectIssuerCol), "NULL")))
+
+                    If iSixFileSanctionedParentEntityCol >= 0 Then
+
+                        sSixFileSanctionedParentEntity = "'" & Trim(Nz(vaColumnsFromFile(iSixFileSanctionedParentEntityCol), vbNullString)) & "'"
+
+                    Else
+
+                        sSixFileSanctionedParentEntity = "''"
+
+                    End If
+
+                    If iSixFileInstrNameCol >= 0 Then
+
+                        sSixFileInstrName = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileInstrNameCol), "NULL")))
+
+                    Else
+
+                        sSixFileInstrName = "NULL"
+
+                    End If
+
+                    If iSixFileIndicativeIssueDateCol >= 0 Then
+
+                        dSixFileIndicativeIssueDate = FormatDateStringToProperDate(Trim(vaColumnsFromFile(iSixFileIndicativeIssueDateCol)), True)
+
+                    Else
+
+                        dSixFileIndicativeIssueDate = vbNull
+
+                    End If
+
+                    sSixFileInstrumentType = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileInstrumentTypeCol), "NULL")))
+
+                    If iSixFileSanctionsRelevantAssetClassCol >= 0 Then
+
+                        sSixFileSanctionsRelevantAssetClass = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileSanctionsRelevantAssetClassCol), "NULL")))
+
+                    Else
+
+                        sSixFileSanctionsRelevantAssetClass = "NULL"
+
+                    End If
+
+                    If iSixFileMainInstrumentCol >= 0 Then
+
+                        sSixFileMainInstrument = "'" & Trim(Nz(vaColumnsFromFile(iSixFileMainInstrumentCol), vbNullString)) & "'"
+
+                    Else
+
+                        sSixFileMainInstrument = "''"
+
+                    End If
+
+                    If iSixFileEquityTypeOfIssuanceCol >= 0 Then
+
+                        sSixFileEquityTypeOfIssuance = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileEquityTypeOfIssuanceCol), "NULL")))
+
+                    Else
+
+                        sSixFileEquityTypeOfIssuance = "NULL"
+
+                    End If
+
+                    sSixFileDenominationCurrency = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileDenominationCurrencyCol), "NULL")))
+                    If iSixFileMaturityDateCol >= 0 Then
+
+                        dSixFileMaturityDate = FormatDateStringToProperDate(Trim(vaColumnsFromFile(iSixFileMaturityDateCol)), True)
+
+                    Else
+
+                        dSixFileMaturityDate = vbNull
+
+                    End If
+
+                    If iSixFileDebtLifetimeInDaysCol >= 0 Then
+
+                        sSixFileDebtLifetimeInDays = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileDebtLifetimeInDaysCol), "NULL")))
+
+                    Else
+
+                        sSixFileDebtLifetimeInDays = "NULL"
+
+                    End If
+
+                    sSixFileActiveFlag = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileActiveFlagCol), "NULL")))
+                    dSixFileIssueDate = FormatDateStringToProperDate(Trim(vaColumnsFromFile(iSixFileIssueDateCol)), True)
+
+                    If iSixFileCapitalChangeDateCol >= 0 Then
+
+                        dSixFileCapitalChangeDate = FormatDateStringToProperDate(Trim(vaColumnsFromFile(iSixFileCapitalChangeDateCol)), True)
+
+                    Else
+
+                        dSixFileCapitalChangeDate = vbNull
+
+                    End If
+
+                    sSixFileSedol = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileSedolCol), "NULL")))
+                    sSixFileCusip = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileCusipCol), "NULL")))
+                    sSixFileCins = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileCinsCol), "NULL")))
+                    sSixFileAustrian = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileAustrianCol), "NULL")))
+                    sSixFileBelgian = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileBelgianCol), "NULL")))
+                    sSixFileCanadian = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileCanadianCol), "NULL")))
+                    sSixFileGerman = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileGermanCol), "NULL")))
+                    sSixFileDenmark = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileDenmarkCol), "NULL")))
+                    sSixFileFranceRga = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileFranceRgaCol), "NULL")))
+                    sSixFileFranceEuroclear = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileFranceEuroclearCol), "NULL")))
+                    sSixFileItalian = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileItalianCol), "NULL")))
+                    sSixFileJapaneseCurrent = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileJapaneseCurrentCol), "NULL")))
+                    sSixFileJapaneseNew = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileJapaneseNewCol), "NULL")))
+                    sSixFileLuxembourg = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileLuxembourgCol), "NULL")))
+                    sSixFileNetherland = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileNetherlandCol), "NULL")))
+                    sSixFileNorwegian = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileNorwegianCol), "NULL")))
+                    sSixFileSwedish = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileSwedishCol), "NULL")))
+                    sSixFileXsIntNumber = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileXsIntNumberCol), "NULL")))
+                    sSixFilePortugal = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFilePortugalCol), "NULL")))
+                    sSixFileSouthKorea = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileSouthKoreaCol), "NULL")))
+                    sSixFileHongKong = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileHongKongCol), "NULL")))
+                    sSixFileBloombergId = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileBloombergIdCol), "NULL")))
+                    sSixFileEu = QuotesIfNotNull(Replace(Trim(Nz(vaColumnsFromFile(iSixFileEuCol), "NULL")), "N.E.", "NULL"))
+                    sSixFileUsSdn = QuotesIfNotNull(Replace(Trim(Nz(vaColumnsFromFile(iSixFileUsSdnCol), "NULL")), "N.E.", "NULL"))
+                    sSixFileUsNonSdn = QuotesIfNotNull(Replace(Trim(Nz(vaColumnsFromFile(iSixFileUsNonSdnCol), "NULL")), "N.E.", "NULL"))
+                    sSixFileUk = QuotesIfNotNull(Replace(Trim(Nz(vaColumnsFromFile(iSixFileUkCol), "NULL")), "N.E.", "NULL"))
+                    sSixFileTarget = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileTargetCol), "NULL")))
+                    sSixFileReasonForChange = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileReasonForChangeCol), "NULL")))
+
+                    If iSixFileSanctionsRationaleCol >= 0 Then
+
+                        sSixFileSanctionsRationale = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileSanctionsRationaleCol), "NULL")))
+
+                    Else
+
+                        sSixFileSanctionsRationale = "NULL"
+
+                    End If
+
+                    If iSixFileDescriptionCol >= 0 Then
+
+                        sSixFileDescription = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileDescriptionCol), "NULL")))
+
+                    Else
+
+                        sSixFileDescription = "NULL"
+
+                    End If
+
+                    If iSixFileExpiryDateCol >= 0 Then
+
+                        dSixFileExpiryDate = FormatDateStringToProperDate(Trim(vaColumnsFromFile(iSixFileExpiryDateCol)), True)
+
+                    Else
+
+                        dSixFileExpiryDate = vbNull
+
+                    End If
+
+                    If iSixFileUnderlyingIsinCol >= 0 Then
+
+                        sSixFileUnderlyingIsin = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileUnderlyingIsinCol), "NULL")))
+
+                    Else
+
+                        sSixFileUnderlyingIsin = "NULL"
+
+                    End If
+
+                    If iSixFileUnderlyingIssuerGkCol >= 0 Then
+
+                        sSixFileUnderlyingIssuerGk = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileUnderlyingIssuerGkCol), "NULL")))
+
+                    Else
+
+                        sSixFileUnderlyingIssuerGk = "NULL"
+
+                    End If
+
+                    If iSixFileUnderlyingIssuerNameCol >= 0 Then
+
+                        sSixFileUnderlyingIssuerName = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileUnderlyingIssuerNameCol), "NULL")))
+
+                    Else
+
+                        sSixFileUnderlyingIssuerName = "NULL"
+
+                    End If
+
+                    If iSixFileFISNCol >= 0 Then
+
+                        sSixFileFISN = QuotesIfNotNull(Trim(Nz(vaColumnsFromFile(iSixFileFISNCol), "NULL")))
+
+                    Else
+
+                        sSixFileFISN = "NULL"
+
+                    End If
+
+                    'Building INSERT SQL Query with obtained variables
+                    sSqlInsertString = "INSERT INTO SIX_ISIN (isin, sanctioned, link_entity, link_csid, name_direct_issuer, sanctioned_parent_entity, confidence_level, instr_name," & vbCrLf _
+                                                    & "external_reference, indicative_issue_date, instrument_type, sanctions_relevant_asset_class, main_instrument," & vbCrLf _
+                                                    & "equity_type_of_issuance, denomination_currency, maturity_date, debt_lifetime_in_days, active_flag, issue_date," & vbCrLf _
+                                                    & "capital_change_date, sedol, cusip, cins, austrian, belgian, canadian, german, denmark, france_rga, france_euroclear," & vbCrLf _
+                                                    & "italian, japanese_current, japanese_new, luxembourg, netherland, norwegian, swedish, xs_int_number, portugal," & vbCrLf _
+                                                    & "south_korea, hong_kong, bloomberg_id, eu, us_sdn, us_non_sdn, uk, target, reason_for_change, sanctions_rationale," & vbCrLf _
+                                                    & "description, expiry_date, underlying_ch, underlying_isin, underlying_issuer_gk, underlying_issuer_name, fisn, rsf_id, rsf_file_nb)" & vbCrLf _
+                                & "VALUES (" & QuotesIfNotNull(DefineInstruNullIsin(sSixFileIsin)) & ", " & QuotesIfNotNull(sSixFileSanctioned) & ", " & sSixFileLinkEntity & ", " & sSixFileLinkCsid & "," & vbCrLf _
+                                    & sSixFileNameDirectIssuer & ", " & sSixFileSanctionedParentEntity & "," & CStr(iConfidenceLevel) & ", " & sSixFileInstrName & "," & vbCrLf _
+                                    & sSixFileExternalReference & ", " & IIf(IsDateNull(dSixFileIndicativeIssueDate), "NULL", FormatDateToProperStringDateSQL(dSixFileIndicativeIssueDate)) & "," & vbCrLf _
+                                    & sSixFileInstrumentType & ", " & sSixFileSanctionsRelevantAssetClass & ", " & sSixFileMainInstrument & ", " & sSixFileEquityTypeOfIssuance & ", " & vbCrLf _
+                                    & sSixFileDenominationCurrency & ", " & IIf(IsDateNull(dSixFileMaturityDate), "NULL", FormatDateToProperStringDateSQL(dSixFileMaturityDate)) & ", " & vbCrLf _
+                                    & sSixFileDebtLifetimeInDays & ", " & sSixFileActiveFlag & ", " & IIf(IsDateNull(dSixFileIssueDate), "NULL", FormatDateToProperStringDateSQL(dSixFileIssueDate)) & "," & vbCrLf _
+                                    & IIf(IsDateNull(dSixFileCapitalChangeDate), "NULL", FormatDateToProperStringDateSQL(dSixFileCapitalChangeDate)) & ", " & sSixFileSedol & ", " & sSixFileCusip & "," & vbCrLf _
+                                    & sSixFileCins & ", " & sSixFileAustrian & ", " & sSixFileBelgian & ", " & sSixFileCanadian & ", " & sSixFileGerman & ", " & sSixFileDenmark & ", " & vbCrLf _
+                                    & sSixFileFranceRga & ", " & sSixFileFranceEuroclear & ", " & sSixFileItalian & ", " & sSixFileJapaneseCurrent & ", " & sSixFileJapaneseNew & ", " & vbCrLf _
+                                    & sSixFileLuxembourg & ", " & sSixFileNetherland & ", " & sSixFileNorwegian & ", " & sSixFileSwedish & ", " & sSixFileXsIntNumber & ", " & vbCrLf _
+                                    & sSixFilePortugal & ", " & sSixFileSouthKorea & ", " & sSixFileHongKong & ", " & sSixFileBloombergId & ", " & sSixFileEu & ", " & vbCrLf _
+                                    & sSixFileUsSdn & ", " & sSixFileUsNonSdn & ", " & sSixFileUk & ", " & sSixFileTarget & ", " & sSixFileReasonForChange & "," & vbCrLf _
+                                    & sSixFileSanctionsRationale & ", " & sSixFileDescription & ", " & IIf(IsDateNull(dSixFileExpiryDate), "NULL", FormatDateToProperStringDateSQL(dSixFileExpiryDate)) & "," & vbCrLf _
+                                    & sSixFileUnderlyingCh & ", " & sSixFileUnderlyingIsin & ", " & sSixFileUnderlyingIssuerGk & ", " & sSixFileUnderlyingIssuerName & ", " & sSixFileFISN & ", " & vbCrLf _
+                                    & CStr(iSixFileId) & ", " & CStr(iSixFileFileNb) & ")"
+
+
+                    'Executing INSERT SQL Query
+                    CurrentDb.Execute sSqlInsertString
+
+                End If
+            End If
+
+            'Applying new progress percentage to progress bar and refreshing display before looping to the next row
+            If (iCurrentRowNb Mod 10 = 0) Or (iCurrentTaux <> iPreviousTaux) Then
+                Form_Dashboard.ProgressBar.Value = iCurrentTaux
+                Form_Dashboard.Etiquette79.Caption = iCurrentTaux & " %"
+                DoEvents
+            End If
+
+            iPreviousTaux = iCurrentTaux
+        Loop
+        DoEvents
+        .Close
+
+    End With
+    timerStopValue = GetTickCount
+    'Once all the file's rows ahve been treated (insert or discarded), the file's information (name and treatment date/time) are set in the CURRENTLY_LOADED_FILE audit table for the proper (param given) file type
+    CurrentDb.Execute "UPDATE CURRENTLY_LOADED_FILES" & vbCrLf & _
+                      "SET " & Replace(LCase(sSixFileRefLabel), " ", "_") & "_file = '" & sSixFileNameNoPath & "', " & Replace(LCase(sSixFileRefLabel), " ", "_") & "_loading_date = Now" & vbCrLf & _
+                      "WHERE ID = 1"
+
+    'Setting progress bar to 100%
+    Form_Dashboard.ProgressBar.Value = 100
+
+    timerTimeValue = ((timerStopValue - timerStartValue) + Abs((timerStopValue < timerStartValue) * 86400)) / 1000
+    Select Case timerTimeValue
+        Case Is < 1
+            mssg = Format(timerTimeValue, "0.000 \m\s")
+        Case 1 To 59
+            mssg = Format(Int(timerTimeValue), "0 \s") 'this one rounds down
+            'mssg = mssg & Format(timerTimeValue\1, "0 \s") this one rounds it off up or down
+        Case 60 To 3599
+            mssg = Format(Int(timerTimeValue / 60), "0 \m\, ") & Format(timerTimeValue Mod 60, "0 \s")
+        Case Is >= 3600
+            mssg = Format(Int(timerTimeValue / 3600), "0 \h\, ") & Format(Int((timerTimeValue Mod 3600) / 60), "0 \m\, ") & Format(timerTimeValue Mod 60, "0 \s")
+        Case Else
+            'do nothing
+    End Select
+
+    'Displaying Execution ouput debug
+    currentDateTime = Now
+    Debug.Print currentDateTime & "--- Fichier CSV " & sSixFileRefLabel & " a bien été importé." & vbCrLf & vbTab & sSixFileNameNoPath & vbCrLf & vbTab & "Total Time : " & mssg
+    'Displaying end of treatment message through a OK only dialog box
+    'MsgBox "Fichier CSV " & sSixFileRefLabel & " a bien été importé." & vbCrLf & vbCrLf & sSixFileNameNoPath & vbCrLf & vbCrLf & "Total Time : " & mssg, vbInformation, "Fichier CSV " & sSixFileRefLabel & " importé."
+
+    'Flushing the ISIN_PROGRAMS table
+    FlushIsinPrograms
+
+    AutoImportSixFile = True
+
+            End If
+        Else '... else, means chosen filename date is not matching the previously loaded Instruments filename date
+
+            '... Ok only dialog box with proper message
+            MsgBox "La date du nom de fichier " & sSixFileRefLabel & " choisi ne correspond pas à la date du fichier SIX Instruments déjà chargé. Il ne peut pas être importé.", vbExclamation + vbOKOnly, "Dates de fichiers non correspondantes"
+
+
+            End If
+        Else '... else, means chosen filename does not match with expected filename pattern
+
+            '... Ok only dialog box with proper message
+            MsgBox "Le nom du fichier choisi ne correspond pas à un fichier " & sSixFileRefLabel & ". Il ne peut pas être importé.", vbExclamation + vbOKOnly, "Nom de fichier " & sSixFileRefLabel & " non conforme"
+
+        End If
+
+End Function
+
+'Public procedure to import a REGLISS GENERIC CSV file for historical Application Dates
+Public Sub AutoImportReglissFile(ByVal iIdReglissFileOrigin As Integer, ByVal sReglissFullPtah As String)
+
+    Dim sReglissFileName, sReglissFileNameNoPath, sIsin, sReglissFileRefLabel, sReglissFileHeader As String
+    Dim iReglissFileIsinCol, iReglissFileIssueDateCol, iCntRows, iCurrentRowNb, iCurrentTaux, iPreviousTaux As Long
+    Dim vaRowsFromFile, vaCurrentRow, vaColumnsFromFile As Variant
+    Dim dIsinApplicationDate As Date
+    Dim tsFile As TextStream
+    Dim rReglissFileRef As Recordset
+    Dim asReglissLists(3) As String
+
+
+
+    'Setting an array with various possibilities of ISIN regimes. Its index is linked to the lists checkboxes
+    asReglissLists(0) = "CMIC"
+    asReglissLists(1) = "EU/US ISIN"
+    asReglissLists(2) = "UK ISIN"
+    asReglissLists(3) = "US PERSONS PROHIBITION ISIN"
+
+    'Getting the information of the REGLISS GENERIC CSV file (rsf_id = 3) stored in the REF_SOURCE_FILE parameters-table by executing the proper SQL query
+    Set rReglissFileRef = CurrentDb.OpenRecordset("SELECT * FROM REF_SOURCE_FILE WHERE rsf_id = 3")
+
+    'Putting the query results in properly typed variables + closing resultset
+    With rReglissFileRef
+
+        sReglissFileRefLabel = .Fields("rsf_ref_label").Value
+        sReglissFileHeader = .Fields("rsf_header").Value
+        iReglissFileIsinCol = .Fields("rsf_isin_column").Value
+        iReglissFileIssueDateCol = .Fields("rsf_issue_date_column").Value
+
+        .Close
+
+    End With
+
+
+    'Catching the picked filename + stripping it from its path
+    sReglissFileName = sReglissFullPtah
+    sReglissFileNameNoPath = GetFilenameFromPath(sReglissFileName)
+
+    'Checking if the chosen file is already opened. If not...
+    If Not IsFileOpen(sReglissFileName) Then
+        timerStartValue = GetTickCount
+
+        'Set progressbar percentage to 0
+        Form_Dashboard.ProgressBar.Value = 0
+        Form_Dashboard.Etiquette79.Caption = "0 %"
+        DoEvents
+        iCntRows = countFileLines(sReglissFileName)
+
+        'Instanciating a filestream object
+        Set tsFile = CreateObject("Scripting.FileSystemObject").OpenTextFile(sReglissFileName, 1, True)
+
+        'Setting filestream object parameters with the picked file
+        With tsFile
+
+            'Looping through each file's rows...
+            Do While Not .AtEndOfStream
+
+                'Incrementing by 1 the currently treated row number and setting the new percentage of the whole file it represents
+                iCurrentRowNb = .Line
+                iCurrentTaux = CInt((iCurrentRowNb * 100) / iCntRows)
+
+                'Reading current row (and automatically preparing for the next one to be read)
+                vaCurrentRow = .ReadLine
+
+                'If this currently is the header row (1st file's row)...
+                If iCurrentRowNb = 1 Then
+
+                    '... Comparing this header to the expected header pattern defined for this kind of file. If they don't match...
+                    If vaCurrentRow <> sReglissFileHeader Then
+
+                        '... Ok only/Warning dialog box with proper message + Exit Sub without doing anything else
+                        MsgBox "Le fichier choisi (" & sReglissFileNameNoPath & ") n'est pas un fichier CSV " & sReglissFileRefLabel & " standard !", vbExclamation, "Mauvais format de fichier"
+                        Exit Sub
+
+                    Else '... else means the current file header matches the stored header pattern...
+
+                        '... flushing the already imported ISIN Historical Application Dates for the specific current list to be loaded
+                        FlushISINHistoApplicationDate iIdReglissFileOrigin
+
+                    End If
+
+                '... else if the current row is not the 1st row and it is not empty...
+                ElseIf Trim(vaCurrentRow) <> vbNullString Then
+
+                    '... we split the row in an array using the semi-colon as separator
+                    vaColumnsFromFile = Split(RemoveInValueSemiColon(vaCurrentRow), ";")
+
+                    'we get the ISIN code and the Record Application Date from the array, using the indexes that were parametered for this kind of file
+                    sIsin = QuotesIfNotNull(Trim(vaColumnsFromFile(iReglissFileIsinCol)))
+                    dIsinApplicationDate = FormatDateStringToProperDate(Nz(vaColumnsFromFile(iReglissFileIssueDateCol), vbNullString))
+
+                    'If there is indeed an ISIN...
+                    If sIsin <> vbNullString Then
+
+                        'Executing the SQL query to insert that ISIN + its Application Date + the file id to trace its origin
+                        CurrentDb.Execute "INSERT INTO ISIN_HISTO_APPLICATION_DATE (isin, application_date, id_regliss_file_origin) VALUES (" & sIsin & ", " & FormatDateToProperStringDateSQL(dIsinApplicationDate) & ", " & CStr(iIdReglissFileOrigin) & ")"
+
+                    End If
+                End If
+
+                'Applying new progress percentage to progress bar and refreshing display before looping to the next row
+                If (iCurrentRowNb Mod 10 = 0) Or (iCurrentTaux <> iPreviousTaux) Then
+                    Form_Dashboard.ProgressBar.Value = iCurrentTaux
+                    Form_Dashboard.Etiquette79.Caption = iCurrentTaux & " %"
+                    DoEvents
+                End If
+                iPreviousTaux = iCurrentTaux
+            Loop
+
+            .Close
+
+        End With
+
+        timerStopValue = GetTickCount
+        timerTimeValue = ((timerStopValue - timerStartValue) + Abs((timerStopValue < timerStartValue) * 86400)) / 1000
+        Select Case timerTimeValue
+            Case Is < 1
+                mssg = Format(timerTimeValue, "0.000 \m\s")
+            Case 1 To 59
+                mssg = Format(Int(timerTimeValue), "0 \s") 'this one rounds down
+                'mssg = mssg & Format(timerTimeValue\1, "0 \s") this one rounds it off up or down
+            Case 60 To 3599
+                mssg = Format(Int(timerTimeValue / 60), "0 \m\, ") & Format(timerTimeValue Mod 60, "0 \s")
+            Case Is >= 3600
+                mssg = Format(Int(timerTimeValue / 3600), "0 \h\, ") & Format(Int((timerTimeValue Mod 3600) / 60), "0 \m\, ") & Format(timerTimeValue Mod 60, "0 \s")
+            Case Else
+                'do nothing
+        End Select
+
+        'Displaying Execution ouput debug
+        currentDateTime = Now
+        Debug.Print currentDateTime & "--- Fichier CSV " & sReglissFileRefLabel & " a bien été importé." & vbCrLf & vbTab & sReglissFileNameNoPath & vbCrLf & vbTab & _ '[cut off at screen edge - verify]
+        "Total Time : " & mssg
+
+
+    End If
+
+End Sub
+
+'Actions taken when the Export to XML button in clicked
+Public Sub AutoExportToXML(ByVal sOutputFolder As String)
+
+    Dim sFileSaveDirectory, sFilesSavedList, sExportResult As String
+
+
+
+    If (chkEUUS.Value And (chkEUUSCMIC.Value Or chkEUUSISIN.Value)) Or chkUK.Value Or chkUSPP.Value Then
+
+        'If unwated Instruments have not yes been removed...
+        If Not bIsUnwantedInstruRemoved Then
+
+            '...calling the homemade procedure which ultimately removes the unwanted Instruments that were kept for proper integration of the Options/Structured data
+            RemoveUnwantedInstruments
+            bIsUnwantedInstruRemoved = True
+
+        End If
+
+        'Calling the filler for ISIN PROGRAMS table now that only the ISIN we want are present in the main table
+        FillIsinPrograms
+
+
+            '... save the path
+            sFileSaveDirectory = sOutputFolder
+            sFilesSavedList = vbNullString
+
+            If chkEUUS.Value Then
+
+                If chkEUUSCMIC.Value Then
+
+                    '... Save the file (using the homemade ExportXML function) and catching filename
+                    sExportResult = ExportXML(0, sFileSaveDirectory, 1)
+
+                    If Not sExportResult Like "ERR_*" Then
+
+                        sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                    End If
+                End If
+
+                If chkEUUSISIN.Value Then
+
+                    sExportResult = ExportXML(1, sFileSaveDirectory, 1)
+
+                    If Not sExportResult Like "ERR_*" Then
+
+                        '... Save the file (using the homemade ExportXML function) and catching filename
+                        sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                    End If
+                End If
+
+            End If
+
+            If chkUK.Value Then
+
+                sExportResult = ExportXML(1, sFileSaveDirectory, 2)
+
+                If Not sExportResult Like "ERR_*" Then
+
+                    '... Save the file (using the homemade ExportXML function) and catching filename
+                    sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                End If
+            End If
+
+            If chkUSPP.Value Then
+
+                sExportResult = ExportXML(1, sFileSaveDirectory, 3)
+
+                If Not sExportResult Like "ERR_*" Then
+
+                    '... Save the file (using the homemade ExportXML function) and catching filename
+                    sFilesSavedList = sFilesSavedList & vbCrLf & vbTab & "- " & sExportResult
+
+                End If
+            End If
+
+            If sFilesSavedList <> vbNullString Then
+
+                'MsgBox "Le(s) fichier(s) XML :" & vbCrLf & sFilesSavedList & vbCrLf & vbCrLf & "a/ont bien été enregistré(s).", vbInformation + vbOKOnly, "Fichier(s)
+                XML bien exporté(s)"
+                currentDateTime = Now
+                Debug.Print currentDateTime & "--- Le(s) fichier(s) XML :" & vbCrLf & sFilesSavedList & vbCrLf & vbCrLf & "a/ont bien été enregistré(s)."
+            Else
+
+                MsgBox "Aucun fichier XML n'a été enregistré.", vbExclamation + vbOKOnly, "Aucun fichier XML exporté"
+
+            End If
+        Else 'if no folder was selected...
+
+            '... display a warning message accordingly
+            MsgBox "Aucun répertoire choisi. Aucun fichier XML n'a été exporté.", vbExclamation + vbOKOnly, "Pas de répertoire choisi"
+
+        End If
+
+
+End Sub
