@@ -17,6 +17,14 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+// TODO: re-add project imports for: ListType, SixFilters, SixSubFilters, SixSubORFilters
 
 @AllArgsConstructor
 @Slf4j
@@ -33,6 +41,12 @@ public class ExportRepositoryImpl {
      */
 
     private static final DateTimeFormatter FOOTER_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String FOOTER_LINE = "<!-- ######################################################################## -->\n";
+    /** Order of the filter lines in the footer (file types in lower case). */
+    private static final List<String> FILE_TYPE_ORDER = Arrays.asList("instrument file", "structured file", "options file",
+            "data extractor 1", "data extractor 2");
+    private static final Comparator<SixFilters> FILTER_ORDER = Comparator.comparingInt((SixFilters f) -> fileTypeRank(f.getFileType()))
+            .thenComparing(f -> nullToEmpty(f.getFilterName()), String.CASE_INSENSITIVE_ORDER);
 
     /** JAXBContext of ListType, created on first use (thread safe; the Marshaller is not, one per call). */
     private static volatile JAXBContext listTypeContext;
@@ -120,6 +134,96 @@ public class ExportRepositoryImpl {
                 .append(nullToEmpty(refcodeList)).append("  -->\n");
         footerBuilder.append("<!-- ######################################################################## -->\n");
         return footerBuilder.toString();
+    }
+
+    /**
+     * SIX CONVERTER file: same XML, then the footer describing the filters of the list ({@link #footer(List)}).
+     *
+     * @param filters active filters of the list (null: they could not be read - the footer says so)
+     */
+    public static void writeFile(ListType xmlObj, OutputStream out, List<SixFilters> filters) throws JAXBException, IOException {
+        if (xmlObj == null) {
+            throw new IllegalArgumentException("xmlObj must not be null");
+        }
+        Marshaller marshaller = listTypeContext().createMarshaller();
+        marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, Boolean.TRUE);
+        marshaller.setProperty(Marshaller.JAXB_ENCODING, StandardCharsets.UTF_8.name());
+        marshaller.marshal(xmlObj, out);
+        out.write(footer(filters).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Footer of a SIX CONVERTER file:
+     * <pre>
+     * &lt;!-- ##### --&gt;
+     * &lt;!-- 2026-10-19 17:05:33 --&gt;
+     * &lt;!-- Content filtered by --&gt;
+     * &lt;!-- [Instrument File] UK filter : (SANCTIONED equals Yes) AND (UK - REGIME is not empty true) --&gt;
+     * &lt;!-- [Instrument File] UK filter : rows of the CMIC rule excluded --&gt;
+     * &lt;!-- ##### --&gt;
+     * </pre>
+     * One line per active filter (file type, name, its sub-filters joined with AND, the rows of a sub-filter with OR),
+     * in the order Instrument, Structured, Options, Data extractor 1 / 2; then one line per CMIC / E014071 exclusion
+     * of that filter.
+     */
+    static String footer(List<SixFilters> filters) {
+        StringBuilder footer = new StringBuilder(FOOTER_LINE);
+        comment(footer, LocalDateTime.now(ZoneOffset.UTC).format(FOOTER_TIME));
+        comment(footer, "Content filtered by");
+        if (filters == null) {
+            comment(footer, "filters not available");
+        } else if (filters.isEmpty()) {
+            comment(footer, "no active filter");
+        } else {
+            filters.stream().filter(Objects::nonNull).sorted(FILTER_ORDER).forEach(filter -> {
+                String prefix = "[" + nullToEmpty(filter.getFileType()) + "] " + nullToEmpty(filter.getFilterName()) + " : ";
+                comment(footer, prefix + conditions(filter));
+                if (filter.isExcludeCMIC()) {
+                    comment(footer, prefix + "rows of the CMIC rule excluded");
+                }
+                if (filter.isExcludeE014071()) {
+                    comment(footer, prefix + "rows of the E014071 rule excluded");
+                }
+            });
+        }
+        footer.append(FOOTER_LINE);
+        return footer.toString();
+    }
+
+    /** Sub-filters joined with AND, the rows of one sub-filter with OR (the footer never stops the file). */
+    private static String conditions(SixFilters filter) {
+        try {
+            return describe(filter);
+        } catch (RuntimeException e) {
+            log.warn("SIX footer: conditions of filter {} not available: {}", filter.getFilterName(), e.getMessage());
+            return "conditions not available";
+        }
+    }
+
+    private static String describe(SixFilters filter) {
+        String conditions = filter.getActiveSixSubfilters().stream()
+                .sorted(Comparator.comparing(SixSubFilters::getSixIndex, Comparator.nullsLast(Comparator.naturalOrder())))
+                .map(sub -> sub.getActiveSixSubORfilters().stream()
+                        .sorted(Comparator.comparing(SixSubORFilters::getSixORIndex, Comparator.nullsLast(Comparator.naturalOrder())))
+                        .map(or -> nullToEmpty(or.getFieldName()) + " " + nullToEmpty(or.getOperator()) + " " + nullToEmpty(or.getFilterValue()))
+                        .collect(Collectors.joining(" OR ", "(", ")")))
+                .filter(group -> !"()".equals(group))
+                .collect(Collectors.joining(" AND "));
+        return conditions.isEmpty() ? "no condition" : conditions;
+    }
+
+    /** One comment line; the text can never close the comment ("--" is not allowed inside an XML comment). */
+    private static void comment(StringBuilder footer, String text) {
+        String safe = text.replaceAll("[\\r\\n\\t]+", " ");
+        while (safe.contains("--")) {
+            safe = safe.replace("--", "- -");
+        }
+        footer.append("<!-- ").append(safe).append(" -->\n");
+    }
+
+    private static int fileTypeRank(String fileType) {
+        int rank = FILE_TYPE_ORDER.indexOf(fileType == null ? "" : fileType.trim().toLowerCase(Locale.ROOT));
+        return rank < 0 ? FILE_TYPE_ORDER.size() : rank;
     }
 
     private static JAXBContext listTypeContext() throws JAXBException {
