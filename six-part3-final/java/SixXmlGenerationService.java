@@ -30,6 +30,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -39,7 +40,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 // TODO: re-add project imports for: ListType, ExportRepositoryImpl, ImportedFile, ImportedFileRepository,
-// BatchJobExecution, BatchJobExecutionRepository, Version, VersionRepository
+// BatchJobExecution, BatchJobExecutionRepository, Version, VersionRepository, SixFilters, SixSubFilters,
+// SixFiltersRepository
 
 /**
  * Creates the CONVERTER-...xml file of a SIX output list.
@@ -86,6 +88,9 @@ public class SixXmlGenerationService {
 
     @Autowired
     private VersionRepository versionRepository;
+
+    @Autowired
+    private SixFiltersRepository sixFiltersRepository;
 
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     public static final Pattern date = Pattern.compile("_(\\d{8}_\\d{6})$$");
@@ -139,7 +144,7 @@ public class SixXmlGenerationService {
         } catch (IOException e) {
             throw new IllegalStateException("Holding folder " + folder + " could not be created: " + e.getMessage(), e);
         }
-        writeValidatedFile(listType, folder, fileName);
+        writeValidatedFile(listType, folder, fileName, activeFilters(listRef));
         log.info("File {} held at {} until its delivery {} is complete", fileName, folder, delivery);
         return folder.resolve(fileName);
     }
@@ -239,7 +244,7 @@ public class SixXmlGenerationService {
                 Files.deleteIfExists(folder);
             }
         } catch (DirectoryNotEmptyException e) {
-            log.debug("Holding folder {} kept: other files are still held there", folder);
+            // other files are still held there
         } catch (IOException e) {
             log.warn("Holding folder {} could not be removed: {}", folder, e.getMessage());
         }
@@ -379,8 +384,13 @@ public class SixXmlGenerationService {
 
     /** Errors keep their real cause (XSD error, disk full ...); checked ones are wrapped. */
     private void writeValidatedFile(ListType listType, Path folder, String fileName) {
+        writeValidatedFile(listType, folder, fileName, null);   // list reference unknown here: no filter in the footer
+    }
+
+    /** Same, the footer lists these filters (null: not available). */
+    private void writeValidatedFile(ListType listType, Path folder, String fileName, List<SixFilters> filters) {
         try {
-            writeFile(listType, folder, fileName);
+            writeFile(listType, folder, fileName, filters);
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {     // checked errors of the XML writer / XSD validation / file system
@@ -392,18 +402,37 @@ public class SixXmlGenerationService {
      * Writes the XML straight to a temporary ".tmp" file in the target folder (no copy of the whole XML in memory),
      * validates it, then renames it atomically to its final name. The ".tmp" file is always removed.
      */
-    private void writeFile(ListType listType, Path folder, String fileName) throws IOException, SAXException, JAXBException {
+    private void writeFile(ListType listType, Path folder, String fileName, List<SixFilters> filters)
+            throws IOException, SAXException, JAXBException {
         Path target = folder.resolve(fileName);
         Path temp = Files.createTempFile(folder, fileName + "_", TMP_EXTENSION); // same folder -> atomic move
         try {
             try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(temp, StandardOpenOption.WRITE))) {
-                ExportRepositoryImpl.writeFile(listType, out, "test1", "test2", "test3", "test4", "test5");
+                ExportRepositoryImpl.writeFile(listType, out, filters);
             }
             validateXsdSchema(temp.toFile());
             Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             log.info("File {} stored at {}", fileName, target);
         } finally {
             Files.deleteIfExists(temp);
+        }
+    }
+
+    /**
+     * Active filters of the list, written in the footer of its CONVERTER file (same repository query as the export).
+     * The footer is information only: if the filters cannot be read, the file is still created and the footer says so.
+     */
+    private List<SixFilters> activeFilters(String listRef) {
+        try {
+            List<SixFilters> filters = sixFiltersRepository.getFiltersByListRefAndActiveTrueAndDeletedFalse(listRef);
+            if (filters == null) {
+                return Collections.emptyList();
+            }
+            filters.forEach(f -> f.getActiveSixSubfilters().forEach(SixSubFilters::getActiveSixSubORfilters));   // load now
+            return filters;
+        } catch (RuntimeException e) {
+            log.warn("Filters of list {} not read for the footer of its CONVERTER file: {}", listRef, e.getMessage());
+            return null;   // NOSONAR null = "not available" in the footer (empty list = "no active filter")
         }
     }
 
