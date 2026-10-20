@@ -28,7 +28,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
-import java.util.function.Predicate;
+import java.util.function.LongPredicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -255,7 +255,7 @@ public class SixFilteredStore {
      * @param jobWorking SixExportRunGuard.isJobWorking
      * @return rows removed
      */
-    public int deleteOlderVersionRows(String fileType, long rawVersionId, Predicate<Long> jobWorking) {
+    public int deleteOlderVersionRows(String fileType, long rawVersionId, LongPredicate jobWorking) {
         LocalDateTime koBefore = LocalDateTime.now().minusMinutes(SixExportRunGuard.KO_AFTER_MINUTES);
         Map<Long, Boolean> working = new HashMap<>();
         List<Long> ids = new ArrayList<>();
@@ -274,7 +274,7 @@ public class SixFilteredStore {
         return removed;
     }
 
-    private static boolean isStillUsed(PollerRow row, LocalDateTime koBefore, Map<Long, Boolean> working, Predicate<Long> jobWorking) {
+    private static boolean isStillUsed(PollerRow row, LocalDateTime koBefore, Map<Long, Boolean> working, LongPredicate jobWorking) {
         String status = row.getStatus();
         if (BUILT.equals(status)) {
             return true;
@@ -368,12 +368,7 @@ public class SixFilteredStore {
     }
 
     private static PollerRow pollerRow(ResultSet rs, int rowNum) throws SQLException {
-        Timestamp updated = rs.getTimestamp("UPDATED_TIME");
-        String reason = rs.getString("GENERATION_REASON");
-        return new PollerRow(rs.getLong("ID"), rs.getString("FILE_TYPE"), nullableLong(rs, "RAW_LIST_ID"),
-                nullableLong(rs, "RAW_VERSION_ID"), nullableLong(rs, "BATCH_JOB_EXECUTION_ID"),
-                rs.getString("SIX_LIST_REFERENCE"), rs.getString("STATUS"), updated == null ? null : updated.toLocalDateTime(),
-                reason == null ? SixExportRunGuard.GENERATION : reason);
+        return new PollerRow(rs);
     }
 
     /** The lists of one job: how many, how many in DJ IN, how many held, how many still open, how many dropped. */
@@ -430,17 +425,19 @@ public class SixFilteredStore {
         private final LocalDateTime updatedTime;
         private final String generationReason;
 
-        PollerRow(long id, String fileType, Long rawListId, Long rawVersionId, Long batchJobExecutionId, String listRef,
-                  String status, LocalDateTime updatedTime, String generationReason) {
-            this.id = id;
-            this.fileType = fileType;
-            this.rawListId = rawListId;
-            this.rawVersionId = rawVersionId;
-            this.batchJobExecutionId = batchJobExecutionId;
-            this.listRef = listRef;
-            this.status = status;
-            this.updatedTime = updatedTime;
-            this.generationReason = generationReason;
+        /** Reads the current row of a query on SIX_FILTERED_POLLER (columns of COLUMNS). */
+        PollerRow(ResultSet rs) throws SQLException {
+            Timestamp updated = rs.getTimestamp("UPDATED_TIME");
+            String reason = rs.getString("GENERATION_REASON");
+            this.id = rs.getLong("ID");
+            this.fileType = rs.getString("FILE_TYPE");
+            this.rawListId = nullableLong(rs, "RAW_LIST_ID");
+            this.rawVersionId = nullableLong(rs, "RAW_VERSION_ID");
+            this.batchJobExecutionId = nullableLong(rs, "BATCH_JOB_EXECUTION_ID");
+            this.listRef = rs.getString("SIX_LIST_REFERENCE");
+            this.status = rs.getString("STATUS");
+            this.updatedTime = updated == null ? null : updated.toLocalDateTime();
+            this.generationReason = reason == null ? SixExportRunGuard.GENERATION : reason;
         }
 
         public long getId() { return id; }
