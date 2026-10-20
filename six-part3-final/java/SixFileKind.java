@@ -21,17 +21,20 @@ import java.util.Optional;
  */
 public enum SixFileKind {
 
-    INSTRUMENT(ImportFileType.SIX_INSTRUMENTS_FILE, "INSTR", "SIX_INSTRUMENTS", null,
-            "Instrument File", "INSTR", "i.isin", "SIX_INSTRU_ID",
-            "FILTERED_SIX_INSTRUMENTS", "IDX_SIX_INSTRUMENT_VERSION", "IDX_SIX_TARGET_INSTR_ID"),
+    INSTRUMENT(ImportFileType.SIX_INSTRUMENTS_FILE,
+            new Names("INSTR", "Instrument File", "INSTR"),
+            new Tables("SIX_INSTRUMENTS", null, "i.isin", "SIX_INSTRU_ID",
+                    "FILTERED_SIX_INSTRUMENTS", "IDX_SIX_INSTRUMENT_VERSION", "IDX_SIX_TARGET_INSTR_ID")),
 
-    STRUCTURED(ImportFileType.SIX_STRUCTURED_FILE, "STRUCT", "SIX_STRUCTURED", "UNDERLYING_CH",
-            "Structured File", "STRUCT", "i.host_isin", "SIX_STRUCT_ID",
-            "FILTERED_SIX_STRUCTURED", "IDX_SIX_STRUCTURE_VERSION", "IDX_SIX_TARGET_STRUCT_ID"),
+    STRUCTURED(ImportFileType.SIX_STRUCTURED_FILE,
+            new Names("STRUCT", "Structured File", "STRUCT"),
+            new Tables("SIX_STRUCTURED", "UNDERLYING_CH", "i.host_isin", "SIX_STRUCT_ID",
+                    "FILTERED_SIX_STRUCTURED", "IDX_SIX_STRUCTURE_VERSION", "IDX_SIX_TARGET_STRUCT_ID")),
 
-    OPTIONS(ImportFileType.SIX_OPTIONS_FILE, "OPT", "SIX_OPTION", "UNDERLYING_CH",
-            "Options File", "OPTIONS", "i.isin_option", "SIX_OPT_ID",
-            "FILTERED_SIX_OPTION", "IDX_SIX_OPT_VERSION", "IDX_SIX_TARGET_OPT_ID");
+    OPTIONS(ImportFileType.SIX_OPTIONS_FILE,
+            new Names("OPT", "Options File", "OPTIONS"),
+            new Tables("SIX_OPTION", "UNDERLYING_CH", "i.isin_option", "SIX_OPT_ID",
+                    "FILTERED_SIX_OPTION", "IDX_SIX_OPT_VERSION", "IDX_SIX_TARGET_OPT_ID"));
 
     private final ImportFileType importFileType;
     private final String fileNameMarker;
@@ -45,20 +48,18 @@ public enum SixFileKind {
     private final String versionIndex;
     private final String targetFkIndex;
 
-    SixFileKind(ImportFileType importFileType, String fileNameMarker, String table, String instrumentLinkColumn,
-                String filterFileType, String pollerFileType, String rootIsinColumn, String targetFkColumn,
-                String filteredTable, String versionIndex, String targetFkIndex) {
+    SixFileKind(ImportFileType importFileType, Names names, Tables tables) {
         this.importFileType = importFileType;
-        this.fileNameMarker = fileNameMarker;
-        this.table = table;
-        this.instrumentLinkColumn = instrumentLinkColumn;
-        this.filterFileType = filterFileType;
-        this.pollerFileType = pollerFileType;
-        this.rootIsinColumn = rootIsinColumn;
-        this.targetFkColumn = targetFkColumn;
-        this.filteredTable = filteredTable;
-        this.versionIndex = versionIndex;
-        this.targetFkIndex = targetFkIndex;
+        this.fileNameMarker = names.fileNameMarker;
+        this.filterFileType = names.filterFileType;
+        this.pollerFileType = names.pollerFileType;
+        this.table = tables.table;
+        this.instrumentLinkColumn = tables.instrumentLinkColumn;
+        this.rootIsinColumn = tables.rootIsinColumn;
+        this.targetFkColumn = tables.targetFkColumn;
+        this.filteredTable = tables.filteredTable;
+        this.versionIndex = tables.versionIndex;
+        this.targetFkIndex = tables.targetFkIndex;
     }
 
     /** The instrument file: it carries the confidence level, every other file takes it from there. */
@@ -137,5 +138,40 @@ public enum SixFileKind {
     /** The kind whose rows are addressed by this root ISIN column (i.isin -> INSTRUMENT ...). */
     public static Optional<SixFileKind> ofRootIsin(String rootIsinColumn) {
         return Arrays.stream(values()).filter(k -> k.rootIsinColumn.equalsIgnoreCase(rootIsinColumn)).findFirst();
+    }
+
+    /** How a file type is named: marker in the SIX file name, SIX_FILTERS.FILE_TYPE, SIX_FILTERED_POLLER.FILE_TYPE. */
+    static final class Names {
+        private final String fileNameMarker;
+        private final String filterFileType;
+        private final String pollerFileType;
+
+        Names(String fileNameMarker, String filterFileType, String pollerFileType) {
+            this.fileNameMarker = fileNameMarker;
+            this.filterFileType = filterFileType;
+            this.pollerFileType = pollerFileType;
+        }
+    }
+
+    /** Tables, columns and indexes of a file type (constants only, never from input). */
+    static final class Tables {
+        private final String table;
+        private final String instrumentLinkColumn;
+        private final String rootIsinColumn;
+        private final String targetFkColumn;
+        private final String filteredTable;
+        private final String versionIndex;
+        private final String targetFkIndex;
+
+        Tables(String table, String instrumentLinkColumn, String rootIsinColumn, String targetFkColumn,
+               String filteredTable, String versionIndex, String targetFkIndex) {
+            this.table = table;
+            this.instrumentLinkColumn = instrumentLinkColumn;
+            this.rootIsinColumn = rootIsinColumn;
+            this.targetFkColumn = targetFkColumn;
+            this.filteredTable = filteredTable;
+            this.versionIndex = versionIndex;
+            this.targetFkIndex = targetFkIndex;
+        }
     }
 }
