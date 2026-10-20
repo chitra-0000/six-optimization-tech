@@ -1,4 +1,4 @@
-package com.bnpp.regliss.scheduler;
+package com.bnpp.regliss.six.scheduler;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -731,17 +731,8 @@ public class SixXmlGenerationPoller {
      */
     private void removeDuplicatedIsinBasedOnSanctioned(List<FilteredInstrumentFile> filteredInstru,
                                                        List<FilteredStructuredFile> filteredStructured) {
-        Map<String, String> instrumentISINWithSanctionedDetail = filteredInstru.stream()
-                .filter(i -> i.getIsin() != null)
-                .collect(Collectors.toMap(
-                        FilteredInstrumentFile::getIsin,
-                        i -> i.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).distinct()
-                                .collect(Collectors.joining(" - "))));
-
-        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = new HashMap<>();
-        for (FilteredStructuredFile sf : filteredStructured) {
-            structuredByHostIsin.computeIfAbsent(sf.getHostIsin(), k -> new ArrayList<>()).add(sf);
-        }
+        Map<String, String> instrumentISINWithSanctionedDetail = sanctionedTextByIsin(filteredInstru);
+        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = groupByHostIsin(filteredStructured);
         Map<FilteredStructuredFile, String> sanctionedText = new IdentityHashMap<>();
         Function<FilteredStructuredFile, String> sanctionedOf = sf -> sanctionedText.computeIfAbsent(sf,
                 k -> k.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).collect(Collectors.joining(" - ")).toUpperCase());
@@ -751,18 +742,9 @@ public class SixXmlGenerationPoller {
         for (Map.Entry<String, String> instrumentISIN : instrumentISINWithSanctionedDetail.entrySet()) {
             if (instrumentISIN.getValue().toUpperCase().contains("YES")) {
                 removedStructured.addAll(structuredByHostIsin.getOrDefault(instrumentISIN.getKey(), Collections.emptyList()));
-            } else {
-                List<FilteredStructuredFile> sameHost = structuredByHostIsin.getOrDefault(instrumentISIN.getValue(), Collections.emptyList());
-                for (FilteredStructuredFile sf : sameHost) {
-                    if (!removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("NO")) {
-                        removedStructured.add(sf);
-                    }
-                }
-                boolean sanctionedStructLeft = sameHost.stream()
-                        .anyMatch(sf -> !removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("YES"));
-                if (sanctionedStructLeft) {
-                    removedInstrumentIsins.add(instrumentISIN.getKey());
-                }
+            } else if (removeNotSanctionedStructured(structuredByHostIsin.getOrDefault(instrumentISIN.getValue(), Collections.emptyList()),
+                    removedStructured, sanctionedOf)) {
+                removedInstrumentIsins.add(instrumentISIN.getKey());
             }
         }
         if (!removedStructured.isEmpty()) {
@@ -771,5 +753,37 @@ public class SixXmlGenerationPoller {
         if (!removedInstrumentIsins.isEmpty()) {
             filteredInstru.removeIf(i -> removedInstrumentIsins.contains(i.getIsin()));
         }
+    }
+
+    /** Instrument ISIN -> its targets' distinct SANCTIONED values joined with " - " (same text as before). */
+    private static Map<String, String> sanctionedTextByIsin(List<FilteredInstrumentFile> filteredInstru) {
+        return filteredInstru.stream()
+                .filter(i -> i.getIsin() != null)
+                .collect(Collectors.toMap(
+                        FilteredInstrumentFile::getIsin,
+                        i -> i.getSixTargets().stream().map(FilteredSixTarget::getSanctioned).distinct()
+                                .collect(Collectors.joining(" - "))));
+    }
+
+    private static Map<String, List<FilteredStructuredFile>> groupByHostIsin(List<FilteredStructuredFile> filteredStructured) {
+        Map<String, List<FilteredStructuredFile>> structuredByHostIsin = new HashMap<>();
+        for (FilteredStructuredFile sf : filteredStructured) {
+            structuredByHostIsin.computeIfAbsent(sf.getHostIsin(), k -> new ArrayList<>()).add(sf);
+        }
+        return structuredByHostIsin;
+    }
+
+    /**
+     * Not-sanctioned instrument branch (unchanged rule): the structured products of sameHost whose targets contain NO are
+     * marked removed; returns true when one whose targets contain YES is still there (the instrument is then removed).
+     */
+    private static boolean removeNotSanctionedStructured(List<FilteredStructuredFile> sameHost, Set<FilteredStructuredFile> removedStructured,
+                                                         Function<FilteredStructuredFile, String> sanctionedOf) {
+        for (FilteredStructuredFile sf : sameHost) {
+            if (!removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("NO")) {
+                removedStructured.add(sf);
+            }
+        }
+        return sameHost.stream().anyMatch(sf -> !removedStructured.contains(sf) && sanctionedOf.apply(sf).contains("YES"));
     }
 }

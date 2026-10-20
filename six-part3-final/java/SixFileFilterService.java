@@ -1,4 +1,4 @@
-package com.bnpp.regliss.importer.six.extractor;
+package com.bnpp.regliss.six.exporter.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,13 +13,17 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.PostConstruct;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.ToLongFunction;
+import java.util.stream.Collectors;
 
 // TODO: re-add the project imports in the IDE (Alt+Enter / Optimize Imports) for:
 // ReglissBatchProfile, SixFilters, InstrumentFile, StructuredFile, OptionsFile,
@@ -59,198 +63,45 @@ public class SixFileFilterService {
     private static final String VERSION_ID = "versionId";
     private static final String AND = " AND ";
     private static final String MANDATORY_SELECT = " WHERE i.LIST_ID = :listId AND i.VERSION_ID = :versionId";
+    private static final String SELECT = "SELECT ";
+    private static final String RAW_ALIAS = "i";
+    private static final String TARGET_ALIAS = "t";
     /** Bind of the ISINs of a same-ISIN content query; at most 1000 values per query (Oracle limit of an IN list). */
     private static final String MERGE_ISINS = "mergeIsins";
     private static final int MERGE_ISINS_PER_QUERY = 1000;
 
-    // Column lists: unchanged (the extractors read these aliases)
-    private static final String INSTR_COLUMNS =
-            "    i.ID                              AS i_id, " +
-            "    i.LIST_ID                         AS i_list_id, " +
-            "    i.VERSION_ID                      AS i_version_id, " +
-            "    i.RECORD_ORIGIN                   AS i_record_origin, " +
-            "    i.OLS_YES                         AS i_ols_yes, " +
-            "    i.OLS_NO                          AS i_ols_no, " +
-            "    i.LINK_ENTITY                     AS i_link_entity, " +
-            "    i.LINK_CSID                       AS i_link_csid, " +
-            "    i.SANCTIONED_PARENT_ENTITY        AS i_sanctioned_parent_entity, " +
-            "    i.NAME_DIRECT_ISSUER              AS i_name_direct_issuer, " +
-            "    i.CONFIDENCE_LEVEL                AS i_confidence_level, " +
-            "    i.ISIN                            AS i_isin, " +
-            "    i.INSTR_NAME                      AS i_instr_name, " +
-            "    i.FISN                            AS i_fisn, " +
-            "    i.CH_VALOR                        AS i_ch_valor, " +
-            "    i.INDICATIVE_ISSUE_DATE           AS i_indicative_issue_date, " +
-            "    i.INSTRUMENT_TYPE                 AS i_instrument_type, " +
-            "    i.SANCTION_RELEVANT_ASSET_CLASS   AS i_sanction_relevant_asset_class, " +
-            "    i.MAIN_INSTRUMENT                 AS i_main_instrument, " +
-            "    i.EQUITY_TYPE_OF_ISSUANCE         AS i_equity_type_of_issuance, " +
-            "    i.DENOMINATION_CURRENCY           AS i_denomination_currency, " +
-            "    i.MATURITY_DATE                   AS i_maturity_date, " +
-            "    i.DEBT_LIFETIME_IN_DAYS           AS i_debt_lifetime_in_days, " +
-            "    i.ACTIVE_FLAG                     AS i_active_flag, " +
-            "    i.DATE_OPENED_IN_SIX              AS i_date_opened_in_six, " +
-            "    i.SUBSTITUTE_ISSUE_DATE           AS i_substitute_issue_date, " +
-            "    i.ISSUE_DATE                      AS i_issue_date, " +
-            "    i.CAPITAL_CHANGE_DATE             AS i_capital_change_date, " +
-            "    i.SEDOL                           AS i_sedol, " +
-            "    i.CUSIP                           AS i_cusip, " +
-            "    i.CINS                            AS i_cins, " +
-            "    i.AUSTRIAN                        AS i_austrian, " +
-            "    i.BELGIAN                         AS i_belgian, " +
-            "    i.CANADIAN                        AS i_canadian, " +
-            "    i.GERMAN                          AS i_german, " +
-            "    i.DENMARK                         AS i_denmark, " +
-            "    i.FRANCE_RGA                      AS i_france_rga, " +
-            "    i.FRANCE_EUROCLEAR                AS i_france_euroclear, " +
-            "    i.ITALIAN                         AS i_italian, " +
-            "    i.JAPANESE_CURRENT                AS i_japanese_current, " +
-            "    i.JAPANESE_NEW                    AS i_japanese_new, " +
-            "    i.LUXEMBOURG                      AS i_luxembourg, " +
-            "    i.NETHERLAND                      AS i_netherland, " +
-            "    i.NORWEGIAN                       AS i_norwegian, " +
-            "    i.SWEDISH                         AS i_swedish, " +
-            "    i.XS_INT_NUMBER                   AS i_xs_int_number, " +
-            "    i.PORTUGAL                        AS i_portugal, " +
-            "    i.SOUTH_KOREA                     AS i_south_korea, " +
-            "    i.HONG_KONG                       AS i_hong_kong, " +
-            "    i.FIGI_GLOBAL_ID                  AS i_figi_global_id, " +
-            "    i.FIGI_GLOBAL_SHARE_CLASS_ID      AS i_figi_global_share_class_id, " +
-            "    i.OBLIGOR_ROLE                    AS i_obligor_role, " +
-            "    i.UNDERLYING_OBLIGOR              AS i_underlying_obligor, " +
-            "    i.UNDERLYING_OBLIGOR_GK           AS i_underlying_obligor_gk, " +
-            "    i.REFERENCE_CAPITAL               AS i_reference_capital, " +
-            "    i.ACTUAL_CAPITAL                  AS i_actual_capital, " +
-            "    i.REGIMES                         AS i_regimes, " +
-            "    t.ID                              AS t_id, " +
-            "    t.SIX_INSTRU_ID                   AS t_six_instru_id, " +
-            "    t.TARGET                          AS t_target, " +
-            "    t.REGIME                          AS t_regime, " +
-            "    t.SANCTIONED                      AS t_sanctioned, " +
-            "    t.LEGAL_BASIS                     AS t_legal_basis, " +
-            "    t.STATUS                          AS t_status, " +
-            "    t.SANCTION_FLAG_CHANGED           AS t_sanction_flag_changed, " +
-            "    t.REASON_FOR_CHANGE               AS t_reason_for_change, " +
-            "    t.SANCTIONS_RATIONALE             AS t_sanctions_rationale ";
+    // Column lists: same columns and aliases as before (the extractors read these aliases: i_<column>, t_<column>),
+    // built from shared name groups instead of three copies of the same text (Sonar: duplicated literals)
+    private static final String[] ROW_KEYS = {"ID", "LIST_ID", "VERSION_ID"};
+    /** Columns of the three raw tables. */
+    private static final String[] SHARED_COLUMNS = {"FISN", "DATE_OPENED_IN_SIX", "INSTRUMENT_TYPE", "DENOMINATION_CURRENCY",
+            "ACTIVE_FLAG", "ISSUE_DATE", "CONFIDENCE_LEVEL", "REGIMES"};
+    private static final String[] IDENTIFIER_COLUMNS = {"SEDOL", "CUSIP", "CINS", "AUSTRIAN", "BELGIAN", "CANADIAN", "GERMAN",
+            "DENMARK", "FRANCE_RGA", "FRANCE_EUROCLEAR", "ITALIAN", "JAPANESE_CURRENT", "JAPANESE_NEW", "LUXEMBOURG",
+            "NETHERLAND", "NORWEGIAN", "SWEDISH", "XS_INT_NUMBER", "PORTUGAL", "SOUTH_KOREA", "HONG_KONG", "FIGI_GLOBAL_ID",
+            "FIGI_GLOBAL_SHARE_CLASS_ID"};
+    private static final String[] INSTRUMENT_OWN_COLUMNS = {"RECORD_ORIGIN", "OLS_YES", "OLS_NO", "LINK_ENTITY", "LINK_CSID",
+            "SANCTIONED_PARENT_ENTITY", "NAME_DIRECT_ISSUER", "ISIN", "INSTR_NAME", "CH_VALOR", "INDICATIVE_ISSUE_DATE",
+            "SANCTION_RELEVANT_ASSET_CLASS", "MAIN_INSTRUMENT", "EQUITY_TYPE_OF_ISSUANCE", "MATURITY_DATE",
+            "DEBT_LIFETIME_IN_DAYS", "SUBSTITUTE_ISSUE_DATE", "CAPITAL_CHANGE_DATE", "OBLIGOR_ROLE", "UNDERLYING_OBLIGOR",
+            "UNDERLYING_OBLIGOR_GK", "REFERENCE_CAPITAL", "ACTUAL_CAPITAL"};
+    private static final String[] STRUCTURED_OWN_COLUMNS = {"HOST_CH", "HOST_ISIN", "HOST_GK", "HOST_ISSUER_SHORTNAME",
+            "DESCRIPTION", "SUBSTITUTE_ISSUE_DATE", "INDICATIVE_ISSUE_DATE", "SETTLEMENT_STYLE", "MATURITY_DATE",
+            "UNDERLYING_CH", "UNDERLYING_ISIN", "UNDERLYING_GK", "UNDERLYING_ISSUER_SHORTNAME"};
+    private static final String[] OPTION_OWN_COLUMNS = {"CH_OPTION", "ISIN_OPTION", "DESCRIPTION", "ISSUER_GK", "ISSUER_NAME",
+            "EXPIRY_DATE", "UNDERLYING_CH", "UNDERLYING_ISIN", "UNDERLYING_ISSUER_GK", "UNDERLYING_ISSUER_NAME"};
+    /** SIX_TARGET: keys (instrument query) and keys of the structured / options queries, then the target values. */
+    private static final String[] INSTRUMENT_TARGET_KEYS = {"ID", "SIX_INSTRU_ID"};
+    private static final String[] OTHER_TARGET_KEYS = {"SIX_STRUCT_ID", "SIX_OPT_ID"};
+    private static final String[] TARGET_VALUE_COLUMNS = {"TARGET", "REGIME", "LEGAL_BASIS", "SANCTIONED", "STATUS",
+            "SANCTION_FLAG_CHANGED", "REASON_FOR_CHANGE", "SANCTIONS_RATIONALE"};
 
-    private static final String STRUCT_COLUMNS =
-            "    i.ID                              AS i_id, " +
-            "    i.LIST_ID                         AS i_list_id, " +
-            "    i.VERSION_ID                      AS i_version_id, " +
-            "    i.HOST_CH                         AS i_host_ch, " +
-            "    i.HOST_ISIN                       AS i_host_isin, " +
-            "    i.HOST_GK                         AS i_host_gk, " +
-            "    i.HOST_ISSUER_SHORTNAME           AS i_host_issuer_shortname, " +
-            "    i.DESCRIPTION                     AS i_description, " +
-            "    i.FISN                            AS i_fisn, " +
-            "    i.DATE_OPENED_IN_SIX              AS i_date_opened_in_six, " +
-            "    i.SUBSTITUTE_ISSUE_DATE           AS i_substitute_issue_date, " +
-            "    i.INDICATIVE_ISSUE_DATE           AS i_indicative_issue_date, " +
-            "    i.SETTLEMENT_STYLE                AS i_settlement_style, " +
-            "    i.INSTRUMENT_TYPE                 AS i_instrument_type, " +
-            "    i.DENOMINATION_CURRENCY           AS i_denomination_currency, " +
-            "    i.MATURITY_DATE                   AS i_maturity_date, " +
-            "    i.ACTIVE_FLAG                     AS i_active_flag, " +
-            "    i.ISSUE_DATE                      AS i_issue_date, " +
-            "    i.UNDERLYING_CH                   AS i_underlying_ch, " +
-            "    i.UNDERLYING_ISIN                 AS i_underlying_isin, " +
-            "    i.UNDERLYING_GK                   AS i_underlying_gk, " +
-            "    i.UNDERLYING_ISSUER_SHORTNAME     AS i_underlying_issuer_shortname, " +
-            "    i.SEDOL                           AS i_sedol, " +
-            "    i.CUSIP                           AS i_cusip, " +
-            "    i.CINS                            AS i_cins, " +
-            "    i.AUSTRIAN                        AS i_austrian, " +
-            "    i.BELGIAN                         AS i_belgian, " +
-            "    i.CANADIAN                        AS i_canadian, " +
-            "    i.GERMAN                          AS i_german, " +
-            "    i.DENMARK                         AS i_denmark, " +
-            "    i.FRANCE_RGA                      AS i_france_rga, " +
-            "    i.FRANCE_EUROCLEAR                AS i_france_euroclear, " +
-            "    i.ITALIAN                         AS i_italian, " +
-            "    i.JAPANESE_CURRENT                AS i_japanese_current, " +
-            "    i.JAPANESE_NEW                    AS i_japanese_new, " +
-            "    i.LUXEMBOURG                      AS i_luxembourg, " +
-            "    i.NETHERLAND                      AS i_netherland, " +
-            "    i.NORWEGIAN                       AS i_norwegian, " +
-            "    i.SWEDISH                         AS i_swedish, " +
-            "    i.XS_INT_NUMBER                   AS i_xs_int_number, " +
-            "    i.PORTUGAL                        AS i_portugal, " +
-            "    i.SOUTH_KOREA                     AS i_south_korea, " +
-            "    i.HONG_KONG                       AS i_hong_kong, " +
-            "    i.FIGI_GLOBAL_ID                  AS i_figi_global_id, " +
-            "    i.FIGI_GLOBAL_SHARE_CLASS_ID      AS i_figi_global_share_class_id, " +
-            "    i.REGIMES                         AS i_regimes, " +
-            "    i.CONFIDENCE_LEVEL                AS i_confidence_level, " +
-            "    t.ID                              AS t_id, " +
-            "    t.SIX_INSTRU_ID                   AS t_six_instru_id, " +
-            "    t.SIX_STRUCT_ID                   AS t_six_struct_id, " +
-            "    t.SIX_OPT_ID                      AS t_six_opt_id, " +
-            "    t.TARGET                          AS t_target, " +
-            "    t.REGIME                          AS t_regime, " +
-            "    t.LEGAL_BASIS                     AS t_legal_basis, " +
-            "    t.SANCTIONED                      AS t_sanctioned, " +
-            "    t.STATUS                          AS t_status, " +
-            "    t.SANCTION_FLAG_CHANGED           AS t_sanction_flag_changed, " +
-            "    t.REASON_FOR_CHANGE               AS t_reason_for_change, " +
-            "    t.SANCTIONS_RATIONALE             AS t_sanctions_rationale ";
-
-    private static final String OPTION_COLUMNS =
-            "    i.ID                              AS i_id, " +
-            "    i.LIST_ID                         AS i_list_id, " +
-            "    i.VERSION_ID                      AS i_version_id, " +
-            "    i.CH_OPTION                       AS i_ch_option, " +
-            "    i.ISIN_OPTION                     AS i_isin_option, " +
-            "    i.DESCRIPTION                     AS i_description, " +
-            "    i.FISN                            AS i_fisn, " +
-            "    i.ISSUER_GK                       AS i_issuer_gk, " +
-            "    i.ISSUER_NAME                     AS i_issuer_name, " +
-            "    i.DATE_OPENED_IN_SIX              AS i_date_opened_in_six, " +
-            "    i.EXPIRY_DATE                     AS i_expiry_date, " +
-            "    i.INSTRUMENT_TYPE                 AS i_instrument_type, " +
-            "    i.DENOMINATION_CURRENCY           AS i_denomination_currency, " +
-            "    i.ACTIVE_FLAG                     AS i_active_flag, " +
-            "    i.ISSUE_DATE                      AS i_issue_date, " +
-            "    i.UNDERLYING_CH                   AS i_underlying_ch, " +
-            "    i.UNDERLYING_ISIN                 AS i_underlying_isin, " +
-            "    i.UNDERLYING_ISSUER_GK            AS i_underlying_issuer_gk, " +
-            "    i.UNDERLYING_ISSUER_NAME          AS i_underlying_issuer_name, " +
-            "    i.SEDOL                           AS i_sedol, " +
-            "    i.CUSIP                           AS i_cusip, " +
-            "    i.CINS                            AS i_cins, " +
-            "    i.AUSTRIAN                        AS i_austrian, " +
-            "    i.BELGIAN                         AS i_belgian, " +
-            "    i.CANADIAN                        AS i_canadian, " +
-            "    i.GERMAN                          AS i_german, " +
-            "    i.DENMARK                         AS i_denmark, " +
-            "    i.FRANCE_RGA                      AS i_france_rga, " +
-            "    i.FRANCE_EUROCLEAR                AS i_france_euroclear, " +
-            "    i.ITALIAN                         AS i_italian, " +
-            "    i.JAPANESE_CURRENT                AS i_japanese_current, " +
-            "    i.JAPANESE_NEW                    AS i_japanese_new, " +
-            "    i.LUXEMBOURG                      AS i_luxembourg, " +
-            "    i.NETHERLAND                      AS i_netherland, " +
-            "    i.NORWEGIAN                       AS i_norwegian, " +
-            "    i.SWEDISH                         AS i_swedish, " +
-            "    i.XS_INT_NUMBER                   AS i_xs_int_number, " +
-            "    i.PORTUGAL                        AS i_portugal, " +
-            "    i.SOUTH_KOREA                     AS i_south_korea, " +
-            "    i.HONG_KONG                       AS i_hong_kong, " +
-            "    i.FIGI_GLOBAL_ID                  AS i_figi_global_id, " +
-            "    i.FIGI_GLOBAL_SHARE_CLASS_ID      AS i_figi_global_share_class_id, " +
-            "    i.REGIMES                         AS i_regimes, " +
-            "    i.CONFIDENCE_LEVEL                AS i_confidence_level, " +
-            "    t.ID                              AS t_id, " +
-            "    t.SIX_INSTRU_ID                   AS t_six_instru_id, " +
-            "    t.SIX_STRUCT_ID                   AS t_six_struct_id, " +
-            "    t.SIX_OPT_ID                      AS t_six_opt_id, " +
-            "    t.TARGET                          AS t_target, " +
-            "    t.REGIME                          AS t_regime, " +
-            "    t.LEGAL_BASIS                     AS t_legal_basis, " +
-            "    t.SANCTIONED                      AS t_sanctioned, " +
-            "    t.STATUS                          AS t_status, " +
-            "    t.SANCTION_FLAG_CHANGED           AS t_sanction_flag_changed, " +
-            "    t.REASON_FOR_CHANGE               AS t_reason_for_change, " +
-            "    t.SANCTIONS_RATIONALE             AS t_sanctions_rationale ";
+    private static final String INSTR_COLUMNS = selectList(RAW_ALIAS, ROW_KEYS, INSTRUMENT_OWN_COLUMNS, SHARED_COLUMNS,
+            IDENTIFIER_COLUMNS) + ", " + selectList(TARGET_ALIAS, INSTRUMENT_TARGET_KEYS, TARGET_VALUE_COLUMNS);
+    private static final String STRUCT_COLUMNS = selectList(RAW_ALIAS, ROW_KEYS, STRUCTURED_OWN_COLUMNS, SHARED_COLUMNS,
+            IDENTIFIER_COLUMNS) + ", " + selectList(TARGET_ALIAS, INSTRUMENT_TARGET_KEYS, OTHER_TARGET_KEYS, TARGET_VALUE_COLUMNS);
+    private static final String OPTION_COLUMNS = selectList(RAW_ALIAS, ROW_KEYS, OPTION_OWN_COLUMNS, SHARED_COLUMNS,
+            IDENTIFIER_COLUMNS) + ", " + selectList(TARGET_ALIAS, INSTRUMENT_TARGET_KEYS, OTHER_TARGET_KEYS, TARGET_VALUE_COLUMNS);
 
     @Autowired
     private NamedParameterJdbcTemplate jdbcTemplate;
@@ -341,11 +192,12 @@ public class SixFileFilterService {
 
     /** Rows of the raw version kept for one output list (InstrumentFile / StructuredFile / OptionsFile). */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public List<?> filter(SixFileKind kind, List<SixFilters> sixFilters, Exclusions exclusions) {
+    public List<Object> filter(SixFileKind kind, List<SixFilters> sixFilters, Exclusions exclusions) {
+        // read-only view of the typed list (no copy of the rows)
         switch (kind) {
-            case INSTRUMENT: return filterInstrument(sixFilters, exclusions);
-            case STRUCTURED: return filterStructured(sixFilters, exclusions);
-            case OPTIONS:    return filterOptions(sixFilters, exclusions);
+            case INSTRUMENT: return Collections.unmodifiableList(filterInstrument(sixFilters, exclusions));
+            case STRUCTURED: return Collections.unmodifiableList(filterStructured(sixFilters, exclusions));
+            case OPTIONS:    return Collections.unmodifiableList(filterOptions(sixFilters, exclusions));
             default:         throw new IllegalArgumentException("Unsupported SIX file type " + kind);
         }
     }
@@ -368,7 +220,7 @@ public class SixFileFilterService {
     // ------------------------------------------------------------------------------------------ engine
 
     private <R> List<R> contentRows(SixFileKind kind, List<SixFilters> sixFilters, Exclusions exclusions, Collection<String> isins,
-                                    ResultSetExtractor<List<R>> extractor, Function<R, Long> idOf) {
+                                    ResultSetExtractor<List<R>> extractor, ToLongFunction<R> idOf) {
         if (exclusions.kind != kind) {
             throw new IllegalArgumentException("Exclusions of " + exclusions.kind + " used for " + kind);
         }
@@ -402,21 +254,15 @@ public class SixFileFilterService {
                 rows.addAll(part);
             }
         }
-        Set<Long> excludedIds = new HashSet<>();
-        if (excludeCmic) {
-            excludedIds.addAll(exclusions.cmicIds());
-        }
-        if (excludeE014071) {
-            excludedIds.addAll(exclusions.e014071Ids());
-        }
-        rows.removeIf(row -> excludedIds.contains(idOf.apply(row)));
+        Set<Long> excludedIds = exclusions.idsToRemove(excludeCmic, excludeE014071);
+        rows.removeIf(row -> excludedIds.contains(idOf.applyAsLong(row)));
         log.info("{} same-ISIN content: {} ISINs, {} rows in {} ms", kind, isinList.size(), rows.size(),
                 System.currentTimeMillis() - start);
         return rows;
     }
 
     private <R> List<R> filter(SixFileKind kind, List<SixFilters> sixFilters, Exclusions exclusions,
-                               ResultSetExtractor<List<R>> extractor, Function<R, Long> idOf, Function<R, String> isinOf) {
+                               ResultSetExtractor<List<R>> extractor, ToLongFunction<R> idOf, Function<R, String> isinOf) {
         if (exclusions.kind != kind) {
             throw new IllegalArgumentException("Exclusions of " + exclusions.kind + " used for " + kind);
         }
@@ -448,58 +294,15 @@ public class SixFileFilterService {
         }
         int read = included.size();
 
-        Set<Long> excludedIds = new HashSet<>();
-        if (excludeCmic) {
-            excludedIds.addAll(exclusions.cmicIds());
-        }
-        if (excludeE014071) {
-            excludedIds.addAll(exclusions.e014071Ids());
-        }
+        Set<Long> excludedIds = exclusions.idsToRemove(excludeCmic, excludeE014071);
         included.removeIf(row -> emptyInAllTargets.contains(isinOf.apply(row))
                 || containsInAllTargets.contains(isinOf.apply(row))
-                || excludedIds.contains(idOf.apply(row)));
+                || excludedIds.contains(idOf.applyAsLong(row)));
 
         log.info("{} filter: {} rows read, {} kept ({} 'all targets' ISINs, CMIC excluded: {}, E014071 excluded: {}) in {} ms",
                 kind, read, included.size(), emptyInAllTargets.size() + containsInAllTargets.size(),
                 excludeCmic, excludeE014071, System.currentTimeMillis() - start);
         return included;
-    }
-
-    /** Ids of the rows matched by the filters of the CMIC (or E014071) list, minus their own "all targets" ISINs. */
-    private Set<Long> excludedIds(SixFileKind kind, long rawListId, long versionId, List<SixFilters> exclusionFilters,
-                                  String label) {
-        MapSqlParameterSource params = scopeParams(rawListId, versionId);
-        List<String> clauses = new ArrayList<>();
-        Set<String> emptyInAllTargets = new HashSet<>();
-        Set<String> containsInAllTargets = new HashSet<>();
-        for (SixFilters filter : exclusionFilters) {
-            if (appliesTo(kind, filter.getFileType())) {
-                clauses.add(sqlBuilder.buildWhereClause(filter.getActiveSixSubfilters(), params, subqueryBase(kind),
-                        kind.getRootIsinColumn(), emptyInAllTargets, containsInAllTargets));
-            }
-        }
-        String where = combineJoin(clauses);
-        if (where.isEmpty()) {
-            // same as before: no SQL condition -> no exclusion
-            log.info("{} exclude {}: no condition for this file type, nothing excluded", kind, label);
-            return Collections.emptySet();
-        }
-        String sql = "SELECT " + joinHint(kind, params) + " i.ID AS i_id, " + kind.getRootIsinColumn() + " AS i_isin"
-                + fromClause(kind, params) + AND + where;
-        log.info("{} exclude {} sql - {}", kind, label, sql);
-        log.debug("{} exclude {} params - {}", kind, label, params);
-
-        long start = System.currentTimeMillis();
-        Set<Long> ids = new HashSet<>();
-        readTemplate.query(sql, params, rs -> {
-            String isin = rs.getString("i_isin");
-            if (!emptyInAllTargets.contains(isin) && !containsInAllTargets.contains(isin)) {
-                ids.add(rs.getLong("i_id"));
-            }
-        });
-        log.info("{} exclude {}: {} rows in {} ms (computed once, used for every list)", kind, label, ids.size(),
-                System.currentTimeMillis() - start);
-        return ids;
     }
 
     // ------------------------------------------------------------------------------------------ SQL parts
@@ -527,12 +330,19 @@ public class SixFileFilterService {
 
     /** Called once the WHERE is built (it decides whether the exclusion view is joined). */
     private static String includeSelect(SixFileKind kind, MapSqlParameterSource params) {
-        return "SELECT " + joinHint(kind, params) + columns(kind) + fromClause(kind, params);
+        return SELECT + joinHint(kind, params) + columns(kind) + fromClause(kind, params);
     }
 
     /** Base of the "all targets" sub-queries: ISINs of the version being filtered (class comment, point 4). */
     private static String subqueryBase(SixFileKind kind) {
-        return "SELECT " + kind.joinHint() + " DISTINCT " + kind.getRootIsinColumn() + fromClause(kind);
+        return SELECT + kind.joinHint() + " DISTINCT " + kind.getRootIsinColumn() + fromClause(kind);
+    }
+
+    /** " i.ID AS i_id, i.LIST_ID AS i_list_id, ..." for the given column names (constants only, never input). */
+    private static String selectList(String alias, String[]... groups) {
+        return " " + Arrays.stream(groups).flatMap(Arrays::stream)
+                .map(column -> alias + "." + column + " AS " + alias + "_" + column.toLowerCase(Locale.ROOT))
+                .collect(Collectors.joining(", ")) + " ";
     }
 
     private static String columns(SixFileKind kind) {
@@ -589,16 +399,64 @@ public class SixFileFilterService {
 
         synchronized Set<Long> cmicIds() {
             if (cmicIds == null) {
-                cmicIds = excludedIds(kind, rawListId, versionId, cmicSixFilters, "cmic");
+                cmicIds = excludedIds(cmicSixFilters, "cmic");
             }
             return cmicIds;
         }
 
         synchronized Set<Long> e014071Ids() {
             if (e014071Ids == null) {
-                e014071Ids = excludedIds(kind, rawListId, versionId, e014071SixFilters, "eo14071");
+                e014071Ids = excludedIds(e014071SixFilters, "eo14071");
             }
             return e014071Ids;
+        }
+
+        /** Ids removed from a list's rows: CMIC and / or E014071 rows, as the list's filters ask. */
+        Set<Long> idsToRemove(boolean cmic, boolean e014071) {
+            Set<Long> ids = new HashSet<>();
+            if (cmic) {
+                ids.addAll(cmicIds());
+            }
+            if (e014071) {
+                ids.addAll(e014071Ids());
+            }
+            return ids;
+        }
+
+        /** Ids of the rows matched by the filters of the CMIC (or E014071) list, minus their own "all targets" ISINs. */
+        private Set<Long> excludedIds(List<SixFilters> exclusionFilters, String label) {
+            MapSqlParameterSource params = scopeParams(rawListId, versionId);
+            List<String> clauses = new ArrayList<>();
+            Set<String> emptyInAllTargets = new HashSet<>();
+            Set<String> containsInAllTargets = new HashSet<>();
+            for (SixFilters filter : exclusionFilters) {
+                if (appliesTo(kind, filter.getFileType())) {
+                    clauses.add(sqlBuilder.buildWhereClause(filter.getActiveSixSubfilters(), params, subqueryBase(kind),
+                            kind.getRootIsinColumn(), emptyInAllTargets, containsInAllTargets));
+                }
+            }
+            String where = combineJoin(clauses);
+            if (where.isEmpty()) {
+                // same as before: no SQL condition -> no exclusion
+                log.info("{} exclude {}: no condition for this file type, nothing excluded", kind, label);
+                return Collections.emptySet();
+            }
+            String sql = SELECT + joinHint(kind, params) + " i.ID AS i_id, " + kind.getRootIsinColumn() + " AS i_isin"
+                    + fromClause(kind, params) + AND + where;
+            log.info("{} exclude {} sql - {}", kind, label, sql);
+            log.debug("{} exclude {} params - {}", kind, label, params);
+
+            long start = System.currentTimeMillis();
+            Set<Long> ids = new HashSet<>();
+            readTemplate.query(sql, params, rs -> {
+                String isin = rs.getString("i_isin");
+                if (!emptyInAllTargets.contains(isin) && !containsInAllTargets.contains(isin)) {
+                    ids.add(rs.getLong("i_id"));
+                }
+            });
+            log.info("{} exclude {}: {} rows in {} ms (computed once, used for every list)", kind, label, ids.size(),
+                    System.currentTimeMillis() - start);
+            return ids;
         }
 
         public SixFileKind getKind() {
