@@ -239,7 +239,7 @@ public class SixXmlGenerationService {
                 Files.deleteIfExists(folder);
             }
         } catch (DirectoryNotEmptyException e) {
-            // other files are still held there
+            log.debug("Holding folder {} kept: other files are still held there", folder);
         } catch (IOException e) {
             log.warn("Holding folder {} could not be removed: {}", folder, e.getMessage());
         }
