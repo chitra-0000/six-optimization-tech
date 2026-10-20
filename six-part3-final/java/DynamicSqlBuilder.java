@@ -251,6 +251,35 @@ public class DynamicSqlBuilder {
         return finalWhereClause;
     }
 
+    /**
+     * Same-ISIN merge (SIX macro rule): WHERE clause of the BASE conditions of a filter, i.e. the same conditions as
+     * buildWhereClause WITHOUT the selection sub-filters (see isSelectionSubFilter). Used to find the other rows of an ISIN
+     * already in the output list whose content is merged into its record. The kept sub-filters are built by the same code
+     * as the export (same operators, AND / OR grouping, exclusion list), so a new filter row is handled automatically.
+     */
+    public String buildBaseWhereClause(Set<SixSubFilters> sixSubFilters, MapSqlParameterSource paramSrc, String rootIsin) {
+        if (sixSubFilters == null || sixSubFilters.isEmpty()) {
+            return "";
+        }
+        List<String> andGroups = new ArrayList<>();
+        for (SixSubFilters sub : sixSubFilters) {
+            if (!isSelectionSubFilter(sub)) {
+                frameQuery(sub, andGroups, paramSrc, rootIsin, sixExclusionList);
+            }
+        }
+        return String.join(AND, andGroups);
+    }
+
+    /**
+     * A sub-filter that decides WHICH ISINs go to the list (regimes): it has a "... - REGIME" row, or an
+     * "empty / contains in all targets" row. Skipped as a whole by buildBaseWhereClause, so an OR group is never
+     * half applied.
+     */
+    public static boolean isSelectionSubFilter(SixSubFilters sub) {
+        return sub.getActiveSixSubORfilters().stream().anyMatch(or -> isRegimeField(or)
+                || EMPTY_IN_ALL_TARGETS.equals(op(or)) || CONTAINS_IN_ALL_TARGETS.equals(op(or)));
+    }
+
     private Collection<String> containsForAllTargetsQuery(SixSubFilters sub,
                                                           Set<String> containsIsinforAllTargetsClauses,
                                                           MapSqlParameterSource paramSrc, String subqueryBase, String rootIsin) {

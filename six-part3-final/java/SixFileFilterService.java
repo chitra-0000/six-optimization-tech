@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Function;
@@ -58,6 +59,9 @@ public class SixFileFilterService {
     private static final String VERSION_ID = "versionId";
     private static final String AND = " AND ";
     private static final String MANDATORY_SELECT = " WHERE i.LIST_ID = :listId AND i.VERSION_ID = :versionId";
+    /** Bind of the ISINs of a same-ISIN content query; at most 1000 values per query (Oracle limit of an IN list). */
+    private static final String MERGE_ISINS = "mergeIsins";
+    private static final int MERGE_ISINS_PER_QUERY = 1000;
 
     // Column lists: unchanged (the extractors read these aliases)
     private static final String INSTR_COLUMNS =
@@ -346,7 +350,70 @@ public class SixFileFilterService {
         }
     }
 
+    /**
+     * Same-ISIN merge: rows of the raw version whose ISIN is one of the given ISINs and that meet the BASE conditions of
+     * the list's filters (every condition except the regime / "all targets" sub-filters, DynamicSqlBuilder.buildBaseWhereClause),
+     * with the same CMIC / E014071 exclusions as the export. Each row comes with the targets that meet these conditions.
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public List<InstrumentFile> instrumentContentRows(List<SixFilters> sixFilters, Exclusions exclusions, Collection<String> isins) {
+        return contentRows(SixFileKind.INSTRUMENT, sixFilters, exclusions, isins, new InstrumentFileExtractor(), InstrumentFile::getId);
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public List<StructuredFile> structuredContentRows(List<SixFilters> sixFilters, Exclusions exclusions, Collection<String> isins) {
+        return contentRows(SixFileKind.STRUCTURED, sixFilters, exclusions, isins, new StructuredFileExtractor(), StructuredFile::getId);
+    }
+
     // ------------------------------------------------------------------------------------------ engine
+
+    private <R> List<R> contentRows(SixFileKind kind, List<SixFilters> sixFilters, Exclusions exclusions, Collection<String> isins,
+                                    ResultSetExtractor<List<R>> extractor, Function<R, Long> idOf) {
+        if (exclusions.kind != kind) {
+            throw new IllegalArgumentException("Exclusions of " + exclusions.kind + " used for " + kind);
+        }
+        List<String> isinList = new ArrayList<>(new LinkedHashSet<>(isins));
+        if (isinList.isEmpty()) {
+            return new ArrayList<>();
+        }
+        MapSqlParameterSource params = scopeParams(exclusions.rawListId, exclusions.versionId);
+        List<String> clauses = new ArrayList<>();
+        boolean excludeCmic = false;
+        boolean excludeE014071 = false;
+        for (SixFilters sixFilter : sixFilters) {
+            if (appliesTo(kind, sixFilter.getFileType())) {
+                clauses.add(sqlBuilder.buildBaseWhereClause(sixFilter.getActiveSixSubfilters(), params, kind.getRootIsinColumn()));
+                excludeCmic |= sixFilter.isExcludeCMIC();
+                excludeE014071 |= sixFilter.isExcludeE014071();
+            }
+        }
+        String where = combineJoin(clauses);
+        // the ISINs are bound (never copied into the SQL), at most MERGE_ISINS_PER_QUERY per query (Oracle IN limit)
+        String sql = includeSelect(kind, params) + (where.isEmpty() ? "" : AND + where)
+                + AND + kind.getRootIsinColumn() + " IN (:" + MERGE_ISINS + ") ORDER BY i.ID, t.ID";
+        log.info("{} same-ISIN content sql - {}", kind, sql);
+
+        long start = System.currentTimeMillis();
+        List<R> rows = new ArrayList<>();
+        for (int from = 0; from < isinList.size(); from += MERGE_ISINS_PER_QUERY) {
+            params.addValue(MERGE_ISINS, isinList.subList(from, Math.min(from + MERGE_ISINS_PER_QUERY, isinList.size())));
+            List<R> part = readTemplate.query(sql, params, extractor);
+            if (part != null) {
+                rows.addAll(part);
+            }
+        }
+        Set<Long> excludedIds = new HashSet<>();
+        if (excludeCmic) {
+            excludedIds.addAll(exclusions.cmicIds());
+        }
+        if (excludeE014071) {
+            excludedIds.addAll(exclusions.e014071Ids());
+        }
+        rows.removeIf(row -> excludedIds.contains(idOf.apply(row)));
+        log.info("{} same-ISIN content: {} ISINs, {} rows in {} ms", kind, isinList.size(), rows.size(),
+                System.currentTimeMillis() - start);
+        return rows;
+    }
 
     private <R> List<R> filter(SixFileKind kind, List<SixFilters> sixFilters, Exclusions exclusions,
                                ResultSetExtractor<List<R>> extractor, Function<R, Long> idOf, Function<R, String> isinOf) {

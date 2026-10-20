@@ -7,7 +7,9 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -20,6 +22,7 @@ public class InstrumentRecordTypeBuilder {
     private SixRecordStartDates sixRecordStartDates;
 
     public static final String OTHERS = "OTHERS";
+    private static final String PROGRAM_KEY_SEPARATOR = "\u0000";
 
     public List<RecordType> filteredInstrumentFileToRecordsTypeConverter(List<FilteredInstrumentFile> childInstru, ReglissList list, String applicationDateFromFileName) {
         // start dates of the list's last version: ONE query for the whole list (before: one query per record)
@@ -49,100 +52,73 @@ public class InstrumentRecordTypeBuilder {
                 .programs(getProgramValues(file)).sanctions(SanctionsType.builder().build()).sources(SourcesType.builder().build()).build();
     }
 
+    /**
+     * Programs of the record's targets (filtered targets only), sorted by label (case-insensitive, as the SIX macro sorts
+     * them), each label + target once.
+     */
     private ProgramsType getProgramValues(FilteredInstrumentFile file) {
-        List<ProgramType> programTypeList = file.getSixTargets().stream().filter(t -> t.getLegalBasis() != null && t.getRegime() != null)
-                .sorted(Comparator.comparing(t -> t.getRegime())).map(this :: programTypeMapping).collect(Collectors.toList());
-        return ProgramsType.builder().program(programTypeList.stream().distinct().collect(Collectors.toList())).build();
+        Map<String, ProgramType> programs = new LinkedHashMap<>();
+        file.getSixTargets().stream().filter(t -> t.getLegalBasis() != null && t.getRegime() != null)
+                .map(this::programTypeMapping)
+                .sorted(Comparator.comparing(ProgramType::getLabel, String.CASE_INSENSITIVE_ORDER))
+                .forEach(p -> programs.putIfAbsent(p.getLabel() + PROGRAM_KEY_SEPARATOR + p.getDescription(), p));
+        return ProgramsType.builder().program(new ArrayList<>(programs.values())).build();
     }
 
     private ProgramType programTypeMapping(FilteredSixTarget filteredSixTarget) {
         return ProgramType.builder().label(filteredSixTarget.getRegime()+ " - "+ filteredSixTarget.getLegalBasis()).type("BNPP Input").description(filteredSixTarget.getTarget()).build();
     }
 
+    /**
+     * Notes, in the order of the SIX macro. The structured values (description ... underlying_issuer_shortname) are only
+     * present when structured rows of the same ISIN were merged into this instrument record.
+     */
     private String getNotes(FilteredInstrumentFile file) {
-        StringBuilder a =  new StringBuilder("ISIN related characteristics : ");
-        buildNotes(file, a);
-        buildNotes1(file, a);
-        buildNotes2(file, a);
-        return a.substring(0, a.length() - 2);
+        StringBuilder notes = new StringBuilder("ISIN related characteristics : ");
+        appendNote(notes, "link_entity", file.getLinkEntity());
+        appendNote(notes, "link_csid", file.getLinkCsid());
+        appendNote(notes, "sanctioned_parent_entity", file.getSanctionedParentEntity());
+        appendNote(notes, "confidence_level", file.getConfidenceLevel());
+        appendNote(notes, "instr_name", file.getInstrName());
+        appendNote(notes, "indicative_issue_date", file.getIndicativeIssueDate());
+        appendNote(notes, "instrument_type", file.getInstrumentType());
+        appendNote(notes, "sanctions_relevant_asset_class", file.getSanctionsRelevantAssetClass());
+        appendNote(notes, "main_instrument", file.getMainInstrument());
+        appendNote(notes, "equity_type_of_issuance", file.getEquityTypeOfIssuance());
+        appendNote(notes, "denomination_currency", file.getDenominationCurrency());
+        appendNote(notes, "maturity_date", file.getMaturityDate());
+        appendNote(notes, "debt_lifetime_in_days", file.getDebtLifetimeInDays());
+        appendNote(notes, "active_flag", file.getActiveFlag());
+        appendNote(notes, "issue_date", file.getIssueDate());
+        appendNote(notes, "capital_change_date", file.getCapitalChangeDate());
+        appendNote(notes, "description", file.getDescription());
+        appendNote(notes, "underlying_ch", file.getUnderlyingCh());
+        appendNote(notes, "underlying_isin", file.getUnderlyingIsin());
+        appendNote(notes, "underlying_gk", file.getUnderlyingGk());
+        appendNote(notes, "underlying_issuer_shortname", file.getUnderlyingIssuerShortname());
+        appendNote(notes, "FISN Instrument short name", file.getFisn());
+        appendNote(notes, "reason_for_change", getValueReasonForChange(file));
+        return notes.substring(0, notes.length() - 2);
     }
 
-    private StringBuilder buildNotes2(FilteredInstrumentFile file, StringBuilder a) {
-        if (StringUtils.isNotBlank(file.getMaturityDate())) {
-            a.append("maturity_date : "+ file.getMaturityDate() + "; ");
+    private static void appendNote(StringBuilder notes, String label, String value) {
+        if (StringUtils.isNotBlank(value)) {
+            notes.append(label).append(" : ").append(value).append("; ");
         }
-        if (StringUtils.isNotBlank(file.getDebtLifetimeInDays())) {
-            a.append("debt_lifetime_in_days : "+ file.getDebtLifetimeInDays() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getActiveFlag())) {
-            a.append("active_flag : "+ file.getActiveFlag() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getIssueDate())) {
-            a.append("issue_date : "+ file.getIssueDate() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getCapitalChangeDate())) {
-            a.append("capital_change_date : "+ file.getCapitalChangeDate() + "; ");
-        }
-        String reasonForChange = getValueReasonForChange(file);
-        if (StringUtils.isNotBlank(reasonForChange)) {
-            a.append("reason_for_change : "+ reasonForChange + "; ");
-        }
-        return a;
     }
 
-    private StringBuilder buildNotes1(FilteredInstrumentFile file, StringBuilder a) {
-        if (StringUtils.isNotBlank(file.getIndicativeIssueDate())) {
-            a.append("indicative_issue_date : "+ file.getIndicativeIssueDate() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getInstrumentType())) {
-            a.append("instrument_type : "+ file.getInstrumentType() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getSanctionsRelevantAssetClass())) {
-            a.append("sanctions_relevant_asset_class : "+ file.getSanctionsRelevantAssetClass() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getMainInstrument())) {
-            a.append("main_instrument : "+ file.getMainInstrument() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getEquityTypeOfIssuance())) {
-            a.append("equity_type_of_issuance : "+ file.getEquityTypeOfIssuance() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getDenominationCurrency())) {
-            a.append("denomination_currency : "+ file.getDenominationCurrency() + "; ");
-        }
-        return a;
+    /** Targets of every merged row (same-ISIN merge), else the record's targets. */
+    private static List<FilteredSixTarget> textTargets(FilteredInstrumentFile file) {
+        return file.getMergedTextTargets() != null ? file.getMergedTextTargets() : file.getSixTargets();
     }
 
     private String getValueReasonForChange(FilteredInstrumentFile file) {
-        return file.getSixTargets().stream().filter(r -> (r.getReasonForChange() != null && !r.getReasonForChange().isEmpty())).map(a -> a.getReasonForChange()).distinct().collect(Collectors.joining(" - "));   // TODO: delimiter partly off-screen - check in the IDE
-    }
-
-    private StringBuilder buildNotes(FilteredInstrumentFile file, StringBuilder a) {
-        if (StringUtils.isNotBlank(file.getLinkEntity())) {
-            a.append("link_entity : "+ file.getLinkEntity() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getLinkCsid())) {
-            a.append("link_csid : "+ file.getLinkCsid() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getSanctionedParentEntity())) {
-            a.append("sanctioned_parent_entity : "+ file.getSanctionedParentEntity() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getConfidenceLevel())) {
-            a.append("confidence_level : "+ file.getConfidenceLevel() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getInstrName())) {
-            a.append("instr_name : "+ file.getInstrName() + "; ");
-        }
-        if (StringUtils.isNotBlank(file.getFisn())) {
-            a.append("FISN Instrument short name : "+ file.getFisn() + "; ");
-        }
-        return a;
+        return textTargets(file).stream().filter(r -> (r.getReasonForChange() != null && !r.getReasonForChange().isEmpty())).map(FilteredSixTarget::getReasonForChange).distinct().collect(Collectors.joining(" - "));
     }
 
     private String getComments(FilteredInstrumentFile file) {
-        return "sanctions_rationale : "+ file.getSixTargets().stream().filter(a -> (a.getSanctionsRationale() != null && !a.getSanctionsRationale().isEmpty())).map(a -> a.getSanctionsRationale())
+        return "sanctions_rationale : "+ textTargets(file).stream().filter(a -> (a.getSanctionsRationale() != null && !a.getSanctionsRationale().isEmpty())).map(FilteredSixTarget::getSanctionsRationale)
                 .distinct().collect(Collectors.joining(" | "));
-
-
     }
 
     private String getSearchCode(FilteredInstrumentFile file) {
@@ -206,7 +182,7 @@ public class InstrumentRecordTypeBuilder {
         if (StringUtils.isNotBlank(file.getPortugal())) {
             List<String> values = file.getPortugal().contains(" - ") ? Arrays.stream(file.getPortugal().split(" - ")).map(String::trim).collect(Collectors.toList()) : Arrays.asList(file.getPortugal());
             for (String value : values) {
-                documentTypes.add(DocumentType.builder().type(OTHERS).issueDate("").expirationDate("").country("").additionalInfo("Instrument Identifier Portugal").number(value).build());
+                documentTypes.add(DocumentType.builder().type(OTHERS).issueDate("").expirationDate("").country("").additionalInfo("Instrument Identifier PORTUGAL").number(value).build());
             }
         }
         return documentTypes;
