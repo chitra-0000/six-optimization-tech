@@ -3,6 +3,7 @@ package com.bnpp.regliss.importer.six.service;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
@@ -58,7 +59,9 @@ public class SixImportExecutor {
      */
     public void blockingSubmit(Runnable task) {
         if (exceptionFromWorker.get() != null) {
-            waitUntilFinished();     // throws the worker error
+            // a writer already failed: wait for the running tasks, then report its error
+            // (always present here: a recorded error is never cleared)
+            throw finish().orElseThrow(IllegalStateException::new);
         }
         try {
             sem.acquire();
@@ -94,6 +97,14 @@ public class SixImportExecutor {
      * (no time limit - a slow import is never cut off).
      */
     public void waitUntilFinished() {
+        Optional<SixImportException> error = finish();
+        if (error.isPresent()) {
+            throw error.get();
+        }
+    }
+
+    /** Shuts the pool down, waits for every task, and returns the worker error (empty if none). */
+    private Optional<SixImportException> finish() {
         executor.shutdown();
         try {
             boolean terminated = executor.awaitTermination(1, TimeUnit.MINUTES);
@@ -106,9 +117,7 @@ public class SixImportExecutor {
             throw new SixImportException("SIX import interrupted while waiting for the writer threads", e);
         }
         Throwable error = exceptionFromWorker.get();
-        if (error != null) {
-            throw new SixImportException("Exception occurred in SIX import worker", error);
-        }
+        return Optional.ofNullable(error).map(e -> new SixImportException("Exception occurred in SIX import worker", e));
     }
 
     private class WorkerThreadFactory implements ThreadFactory {
