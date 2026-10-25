@@ -22,7 +22,7 @@ public class InstrumentRecordTypeBuilder {
     @Autowired
     private SixRecordStartDates sixRecordStartDates;
 
-    public static final String OTHERS = "OTHERS";
+    public static final String OTHERS = "Others";
     private static final String PROGRAM_KEY_SEPARATOR = "\u0000";
 
     public List<RecordType> filteredInstrumentFileToRecordsTypeConverter(List<FilteredInstrumentFile> childInstru, ReglissList list, String applicationDateFromFileName) {
