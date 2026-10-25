@@ -67,6 +67,20 @@ public class SixFileFilterServiceTest {
         when(reads.query(anyString(), any(MapSqlParameterSource.class), any(ResultSetExtractor.class))).thenReturn(new ArrayList<>());
     }
 
+    @Test
+    public void initReadTemplate_sharedTemplateWithoutDataSource_refused() {
+        SixFileFilterService other = new SixFileFilterService();
+        NamedParameterJdbcTemplate shared = mock(NamedParameterJdbcTemplate.class);
+        when(shared.getJdbcTemplate()).thenReturn(new JdbcTemplate());
+        ReflectionTestUtils.setField(other, "jdbcTemplate", shared);
+        try {
+            other.initReadTemplate();
+            fail();
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("no DataSource"));
+        }
+    }
+
     private static SixFilters filter(String fileType, boolean cmic, boolean e014071) {
         SixFilters f = mock(SixFilters.class);
         when(f.getFileType()).thenReturn(fileType);
