@@ -377,9 +377,9 @@ public class SixJdbcBulkWriterTest {
 
     @Test
     public void bind_getterError_isSqlException() {
-        Failing f = new Failing();
+        List<Failing> rows = Collections.singletonList(new Failing());
         try {
-            writer.insertBatch(Collections.singletonList(f), 1L, 2L, x -> null, "X");
+            writer.insertBatch(rows, 1L, 2L, x -> null, "X");
             fail();
         } catch (IllegalStateException e) {
             assertTrue(e.getMessage().contains("Cannot set the id of Failing"));
@@ -389,8 +389,10 @@ public class SixJdbcBulkWriterTest {
     @Test
     public void bind_readError() {
         writer.insertBatch(Collections.<Parent>singletonList(new FailingParent()), 1L, 2L, x -> null, "X");
+        BatchPreparedStatementSetter setter = batches.get(0);
+        PreparedStatement ps = mock(PreparedStatement.class);
         try {
-            batches.get(0).setValues(mock(PreparedStatement.class), 0);
+            setter.setValues(ps, 0);
             fail();
         } catch (SQLException e) {
             assertTrue(e.getMessage().contains("Cannot read getName for column NAME"));
@@ -416,22 +418,37 @@ public class SixJdbcBulkWriterTest {
         verify(jdbcTemplate, times(1)).queryForList(startsWith("SELECT OWNER"), eq("TEST_PARENT"));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void sequenceOverride_badName() {
         when(environment.getProperty("six.import.id-sequence.TEST_CHILD")).thenReturn("owner.bad name");
-        writer.insertBatch(Collections.singletonList(child("c")), 1L, 2L, x -> null, "X");
+        List<Child> rows = Collections.singletonList(child("c"));
+        try {
+            writer.insertBatch(rows, 1L, 2L, x -> null, "X");
+            fail();
+        } catch (IllegalArgumentException e) {
+            assertEquals("Bad sequence name: OWNER.BAD NAME", e.getMessage());
+        }
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void sequence_notFound() {
         when(jdbcTemplate.queryForList(startsWith("SELECT OWNER"), eq("TEST_CHILD"))).thenReturn(Collections.emptyList());
-        writer.insertBatch(Collections.singletonList(child("c")), 1L, 2L, x -> null, "X");
+        insertFails(Collections.singletonList(child("c")));
     }
 
-    @Test(expected = IllegalStateException.class)
+    @Test
     public void nextIds_wrongCount() {
         when(jdbcTemplate.queryForList(anyString(), eq(Long.class), anyInt())).thenReturn(Collections.singletonList(1L));
-        writer.insertBatch(Arrays.asList(child("a"), child("b")), 1L, 2L, x -> null, "X");
+        insertFails(Arrays.asList(child("a"), child("b")));
+    }
+
+    private void insertFails(List<Child> rows) {
+        try {
+            writer.insertBatch(rows, 1L, 2L, x -> null, "X");
+            fail();
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage() != null);
+        }
     }
 
     // ------------------------------------------------------------------------------------------ deleteVersion

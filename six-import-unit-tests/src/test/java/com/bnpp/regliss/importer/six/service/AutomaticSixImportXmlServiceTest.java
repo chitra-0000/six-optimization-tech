@@ -151,8 +151,10 @@ public class AutomaticSixImportXmlServiceTest {
 
     @Test
     public void versionNotFound_reglissException_nothingRemoved() throws Exception {
+        Supplier<UnicodeBOMInputStream> input = xml("<r/>");
+        ReglissList instruments = list(ImportFileType.SIX_INSTRUMENTS_FILE);
         try {
-            service.importAutomaticFileWithoutTx(xml("<r/>"), list(ImportFileType.SIX_INSTRUMENTS_FILE), 6L, 3L);
+            service.importAutomaticFileWithoutTx(input, instruments, 6L, 3L);
             fail();
         } catch (ReglissException e) {
             verify(bulkWriter, never()).deleteVersion(any(), anyLong());
@@ -180,8 +182,9 @@ public class AutomaticSixImportXmlServiceTest {
     }
 
     private void expectWrapped(ReglissList list, RuntimeException cause) throws Exception {
+        Supplier<UnicodeBOMInputStream> input = xml("<r/>");
         try {
-            service.importAutomaticFileWithoutTx(xml("<r/>"), list, 5L, 3L);
+            service.importAutomaticFileWithoutTx(input, list, 5L, 3L);
             fail();
         } catch (ReglissException e) {
             assertSame(cause, e.getCause());
@@ -192,8 +195,10 @@ public class AutomaticSixImportXmlServiceTest {
     public void writeFails_withReglissException_rethrownAsIs() throws Exception {
         ReglissException own = new ReglissException("own");
         doThrow(own).when(instrumentService).streamAndPersist(any(File.class), any(), any(), anyLong());
+        Supplier<UnicodeBOMInputStream> input = xml("<r/>");
+        ReglissList instruments = list(ImportFileType.SIX_INSTRUMENTS_FILE);
         try {
-            service.importAutomaticFileWithoutTx(xml("<r/>"), list(ImportFileType.SIX_INSTRUMENTS_FILE), 5L, 3L);
+            service.importAutomaticFileWithoutTx(input, instruments, 5L, 3L);
             fail();
         } catch (ReglissException e) {
             assertSame(own, e);

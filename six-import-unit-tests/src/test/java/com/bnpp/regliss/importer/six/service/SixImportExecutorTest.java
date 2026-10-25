@@ -55,12 +55,12 @@ public class SixImportExecutorTest {
         return ((AtomicReference<Throwable>) ReflectionTestUtils.getField(executor, "exceptionFromWorker")).get();
     }
 
-    private static void waitForRecordedError(SixImportExecutor executor) throws InterruptedException {
-        long end = System.currentTimeMillis() + 10_000;
-        while (recordedError(executor) == null && System.currentTimeMillis() < end) {
-            Thread.sleep(10);
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            assertTrue(latch.await(10, TimeUnit.SECONDS));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        assertNotNull("worker error not recorded in time", recordedError(executor));
     }
 
     @Test
@@ -100,13 +100,23 @@ public class SixImportExecutorTest {
         }
     }
 
+    /**
+     * One writer thread, so the tasks run one after the other: when the second task runs, the first one has
+     * finished and its error is recorded. No sleep / polling needed.
+     */
     @Test
     public void submitAfterAWorkerErrorThrows() throws InterruptedException {
         SixImportExecutor executor = new SixImportExecutor("test", 1, requestContext);
+        CountDownLatch firstMayFail = new CountDownLatch(1);
+        CountDownLatch secondRan = new CountDownLatch(1);
         executor.blockingSubmit(() -> {
+            awaitQuietly(firstMayFail);
             throw new IllegalStateException("first batch failed");
         });
-        waitForRecordedError(executor);
+        executor.blockingSubmit(secondRan::countDown);       // accepted: the first task has not failed yet
+        firstMayFail.countDown();
+        assertTrue("second task ran", secondRan.await(10, TimeUnit.SECONDS));
+        assertNotNull(recordedError(executor));
         try {
             executor.blockingSubmit(() -> { });
             fail("expected SixImportException");
@@ -116,12 +126,11 @@ public class SixImportExecutorTest {
     }
 
     @Test
-    public void jvmErrorOfATaskIsRecordedAsAFailure() throws InterruptedException {
+    public void jvmErrorOfATaskIsRecordedAsAFailure() {
         SixImportExecutor executor = new SixImportExecutor("test", 1, requestContext);
         executor.blockingSubmit(() -> {
             throw new AssertionError("simulated JVM error");
         });
-        waitForRecordedError(executor);
         try {
             executor.waitUntilFinished();
             fail("expected SixImportException");
@@ -170,11 +179,7 @@ public class SixImportExecutorTest {
         SixImportExecutor executor = new SixImportExecutor("test", 1, requestContext);
         CountDownLatch release = new CountDownLatch(1);
         executor.blockingSubmit(() -> {
-            try {
-                release.await(10, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            awaitQuietly(release);
         });
         Thread.currentThread().interrupt();
         try {

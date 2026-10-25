@@ -14,11 +14,13 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -107,7 +109,7 @@ public class SixBatchImportRunnerTest {
         List<String> all = new ArrayList<>();
         written.forEach(all::addAll);
         Collections.sort(all);
-        assertEquals(java.util.Arrays.asList("1", "2", "3", "4", "5"), all);
+        assertEquals(Arrays.asList("1", "2", "3", "4", "5"), all);
         verify(progressService, times(3)).incrementImportAutoBatchExecution(eq(7L), eq(ImportAutoPhase.IMPORT_AUTO_XML),
                 eq(importConfiguration), anyInt(), eq(5));
         verify(deliveryService, times(3)).keepWaitingFilesAlive(7L);
@@ -115,10 +117,12 @@ public class SixBatchImportRunnerTest {
 
     @Test
     public void failedBatchFailsTheImport() throws Exception {
+        SixBatchImportRunner.RecordType<Rec, String> failing = type((batch, v, l) -> {
+            throw new IllegalStateException("ORA-00001");
+        });
+        File input = file(1);
         try {
-            runner.run(type((batch, v, l) -> {
-                throw new IllegalStateException("ORA-00001");
-            }), file(1), version, list, 7L);
+            runner.run(failing, input, version, list, 7L);
             fail("expected ReglissException");
         } catch (ReglissException e) {
             assertTrue(e.getMessage().contains("SIX test import failed after 0 of 1 records"));
@@ -139,74 +143,88 @@ public class SixBatchImportRunnerTest {
     }
 
     /**
-     * One writer thread, batches of one record: batch 1 blocks then fails, batch 2 is already queued
-     * (skipped when it starts), batch 3 is skipped too, and the reader stops before record 4.
+     * One writer thread, batches of one record. Batch 1 waits until record 3 is read: by then batch 2 is queued.
+     * Batch 1 fails; batch 2 is skipped when it starts; the reader (blocked until batch 2 starts, so the failure is
+     * already recorded) stops before record 4. Synchronised with latches only - no sleep.
      */
     @Test
     public void stopsReadingAndSkipsQueuedBatchesAfterAFailure() throws Exception {
         ReflectionTestUtils.setField(runner, "dbBatchSize", 1);
         ReflectionTestUtils.setField(runner, "threadPoolSize", 1);
-        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch thirdRecordRead = new CountDownLatch(1);
         List<String> attempted = new CopyOnWriteArrayList<>();
-        Thread releaser = new Thread(() -> {
-            try {
-                Thread.sleep(500);     // batch 2 is queued and the reader waits for a slot by then
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        SixBatchImportRunner.RecordType<Rec, String> type = new SixBatchImportRunner.RecordType<>("test", "REC", Rec.class, r -> {
+            if ("3".equals(r.id)) {
+                thirdRecordRead.countDown();
             }
-            release.countDown();
+            return r.id;
+        }, (batch, v, l) -> {
+            attempted.addAll(batch);
+            awaitQuietly(thirdRecordRead);
+            throw new IllegalStateException("batch failed");
         });
-        releaser.start();
+        File input = file(4);
         try {
-            runner.run(type((batch, v, l) -> {
-                attempted.addAll(batch);
-                try {
-                    release.await(10, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                throw new IllegalStateException("batch failed");
-            }), file(4), version, list, 7L);
+            runner.run(type, input, version, list, 7L);
             fail("expected ReglissException");
         } catch (ReglissException e) {
             assertTrue(e.getMessage().contains("batch failed"));
-        } finally {
-            releaser.join();
         }
         assertEquals(Collections.singletonList("1"), attempted);
     }
-    /** Batch 1 fails while the last (partial) batch is still being read: that last batch is not submitted. */
+
+    /**
+     * Batch [1, 2] fails while record 3 (the last, partial batch) is being read: that last batch is not submitted.
+     * The reader waits until the writer thread has finished the failed batch (it is then idle, waiting for work):
+     * the failure is recorded by then.
+     */
     @Test
     public void lastPartialBatchIsNotSubmittedAfterAFailure() throws Exception {
         ReflectionTestUtils.setField(runner, "dbBatchSize", 2);
         ReflectionTestUtils.setField(runner, "threadPoolSize", 1);
-        java.util.concurrent.atomic.AtomicBoolean failed = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicReference<Thread> writerThread = new AtomicReference<>();
+        CountDownLatch thirdRecordRead = new CountDownLatch(1);
+        CountDownLatch failing = new CountDownLatch(1);
         List<List<String>> attempted = new CopyOnWriteArrayList<>();
         SixBatchImportRunner.RecordType<Rec, String> type = new SixBatchImportRunner.RecordType<>("test", "REC", Rec.class, r -> {
             if ("3".equals(r.id)) {
-                long end = System.currentTimeMillis() + 10_000;
-                while (!failed.get() && System.currentTimeMillis() < end) {
-                    Thread.yield();
-                }
-                try {
-                    Thread.sleep(300);      // the failure is recorded right after the writer throws
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
+                thirdRecordRead.countDown();      // record 3 passed the "stop reading?" check
+                awaitQuietly(failing);
+                awaitIdle(writerThread.get());
             }
             return r.id;
         }, (batch, v, l) -> {
             attempted.add(batch);
-            failed.set(true);
+            writerThread.set(Thread.currentThread());
+            awaitQuietly(thirdRecordRead);        // fail only once record 3 is being read
+            failing.countDown();
             throw new IllegalStateException("batch failed");
         });
+        File input = file(3);
         try {
-            runner.run(type, file(3), version, list, 7L);
+            runner.run(type, input, version, list, 7L);
             fail("expected ReglissException");
         } catch (ReglissException e) {
             assertTrue(e.getMessage().contains("after 0 of 3 records"));
         }
         assertEquals(1, attempted.size());
-        assertEquals(java.util.Arrays.asList("1", "2"), attempted.get(0));
+        assertEquals(Arrays.asList("1", "2"), attempted.get(0));
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            assertTrue(latch.await(10, TimeUnit.SECONDS));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Waits until the pool thread has finished its task and waits for the next one (WAITING on the task queue). */
+    private static void awaitIdle(Thread worker) {
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (worker.getState() != Thread.State.WAITING && System.nanoTime() < end) {
+            Thread.yield();
+        }
+        assertEquals(Thread.State.WAITING, worker.getState());
     }
 }
