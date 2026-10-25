@@ -63,8 +63,6 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 public class SixXmlGenerationService {
 
-    private static final String FILE_GENERATED_OK = "File generation OK";
-    private static final String FILE_GENERATED_KO = "File generation KO";
     private static final String DEFAULT_HOLDING_FOLDER = "six-export-holding";
     private static final String XML_EXTENSION = ".xml";
     private static final String TMP_EXTENSION = ".tmp";
@@ -96,45 +94,13 @@ public class SixXmlGenerationService {
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     public static final Pattern date = Pattern.compile("_(\\d{8}_\\d{6})$$");
 
-    /** Unchanged contract for other callers: "File generation OK" / "File generation KO" (error logged). */
-    public String createAndUploadFile(ListType listType, Set<Long> batchJobExecutionIds) {
-        log.info(">>>createAndUploadFile :: Process starts to create the XML file....");
-        String generatedStatus = FILE_GENERATED_KO;
-        try {
-            createAndUploadFileOrThrow(listType, batchJobExecutionIds);
-            generatedStatus = FILE_GENERATED_OK;
-        } catch (Exception e) {
-            log.error("Exception in createAndUploadFile method", e);
-        }
-        log.info(">>>createAndUploadFile :: Process ends and generated status is {}", generatedStatus);
-        return generatedStatus;
-    }
-
-    /**
-     * Same file as createAndUploadFile, put directly into the DJ IN folder, but an error is thrown to the caller (with
-     * its real cause: XSD error, disk full, ...) instead of only being logged.
-     *
-     * @return the name of the file placed in the DJ IN folder
-     */
-    public String createAndUploadFileOrThrow(ListType listType, Set<Long> batchJobExecutionIds) {
-        String fileName = converterFileName(listType, batchJobExecutionIds, null);
-        writeValidatedFile(listType, djInFolder(), fileName);
-        return fileName;
-    }
-
     /**
      * SIX export: creates the CONVERTER file of one list in the holding folder of its delivery
      * (holding/&lt;delivery&gt;/&lt;list&gt;/). The file reaches the DJ IN folder only with {@link #releaseHeldFiles}.
+     * The date in the file name of an automatic export comes from the SIX instrument file of
+     * {@code instrumentVersionId} (the raw version being exported). Null: latest instrument version, as before.
      *
      * @return the held file
-     */
-    public Path createHeldFileOrThrow(ListType listType, Set<Long> batchJobExecutionIds, String delivery, String listRef) {
-        return createHeldFileOrThrow(listType, batchJobExecutionIds, delivery, listRef, null);
-    }
-
-    /**
-     * Same; the date in the file name of an automatic export comes from the SIX instrument file of
-     * {@code instrumentVersionId} (the raw version being exported). Null: latest instrument version, as before.
      */
     public Path createHeldFileOrThrow(ListType listType, Set<Long> batchJobExecutionIds, String delivery, String listRef,
                                       Long instrumentVersionId) {
@@ -383,12 +349,7 @@ public class SixXmlGenerationService {
         return "CONVERTER-" + listType.getLabel() + "_" + listType.getSourceVersion() + "_" + dateTimeToFilledInFileName + XML_EXTENSION;
     }
 
-    /** Errors keep their real cause (XSD error, disk full ...); checked ones are wrapped. */
-    private void writeValidatedFile(ListType listType, Path folder, String fileName) {
-        writeValidatedFile(listType, folder, fileName, null);   // list reference unknown here: no filter in the footer
-    }
-
-    /** Same, the footer lists these filters (null: not available). */
+    /** Errors keep their real cause (XSD error, disk full ...); checked ones are wrapped. The footer lists these filters (null: not available). */
     private void writeValidatedFile(ListType listType, Path folder, String fileName, List<SixFilters> filters) {
         try {
             writeFile(listType, folder, fileName, filters);
