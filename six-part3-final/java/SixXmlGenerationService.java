@@ -408,7 +408,7 @@ public class SixXmlGenerationService {
         Path temp = Files.createTempFile(folder, fileName + "_", TMP_EXTENSION); // same folder -> atomic move
         try {
             try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(temp, StandardOpenOption.WRITE))) {
-                ExportRepositoryImpl.writeFile(listType, out, filters);
+                ExportFileWriter.writeFile(listType, out, filters);
             }
             validateXsdSchema(temp.toFile());
             Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
