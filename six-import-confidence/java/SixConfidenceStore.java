@@ -137,7 +137,7 @@ public class SixConfidenceStore {
                 }
             }
         } catch (Exception notJson) {
-            log.debug("JOB_PARAMS of job {} is not plain JSON, falling back to a text search", batchJobExecutionId);
+            log.debug("JOB_PARAMS of job {} is not plain JSON, falling back to a text search", batchJobExecutionId, notJson);
         }
         Matcher m = DATE_TIME_IN_TEXT.matcher(text);
         return m.find() ? Long.parseLong(m.group(1) + m.group(2)) : null;

@@ -113,20 +113,23 @@ public class AutomaticSixImportFileRepository {
      */
     private boolean moveIfPresent(String fileName, File targetDirectory) throws IOException {
         File source = fileRepo.getFileByName(inputDirectory, fileName);
-        File target = new File(targetDirectory, source.getName()); // NOSONAR: paths are configured not user input
+        File target = new File(targetDirectory, source.getName());   // paths are configured, not user input
         try {
             // ATOMIC_MOVE = a single rename(): it replaces a same-named file in the target folder in one step
             // and fails with NoSuchFileException if another thread already moved the source.
             moveFile(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
             return true;
         } catch (NoSuchFileException alreadyMoved) {
+            log.debug("SIX file {} already moved by another thread or server", fileName, alreadyMoved);
             return false;
         } catch (AtomicMoveNotSupportedException differentFileSystem) {
+            log.debug("SIX file {}: atomic move not supported, copied instead", fileName, differentFileSystem);
             // only if the target folder is on another mount: copy + delete (no longer atomic, still safe if the source is gone)
             try {
                 moveFile(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 return true;
             } catch (NoSuchFileException alreadyMoved) {
+                log.debug("SIX file {} already moved by another thread or server", fileName, alreadyMoved);
                 return false;
             }
         }

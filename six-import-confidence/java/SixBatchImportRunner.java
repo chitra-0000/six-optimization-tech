@@ -144,6 +144,7 @@ public class SixBatchImportRunner {
             }
         } catch (StopAfterFailedBatch stop) {
             log.warn("[{}] a batch failed - stopped reading the file, no further batches are written", type.label);
+            log.debug("[{}] stop signal", type.label, stop);
         } finally {
             state.executor.waitUntilFinished();
         }
