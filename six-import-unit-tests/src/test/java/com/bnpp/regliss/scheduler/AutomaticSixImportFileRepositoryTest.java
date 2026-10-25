@@ -213,10 +213,15 @@ public class AutomaticSixImportFileRepositoryTest {
         assertEquals("abc", new String(Files.readAllBytes(new File(in, "new.xml").toPath()), StandardCharsets.UTF_8));
     }
 
-    @Test(expected = IOException.class)
-    public void createWithContent_ioError() throws IOException {
+    @Test
+    public void createWithContent_ioError() {
         when(fileRepo.createFileByName(in, "bad.xml")).thenReturn(new File(new File(in, "no-such-folder"), "bad.xml"));
         InputStream is = new ByteArrayInputStream(new byte[]{1});
-        repo.createInputFileWithContent("bad.xml", is);
+        try {
+            repo.createInputFileWithContent("bad.xml", is);
+            fail();
+        } catch (IOException e) {
+            assertFalse(new File(in, "bad.xml").exists());
+        }
     }
 }
