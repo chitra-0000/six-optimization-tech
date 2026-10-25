@@ -145,10 +145,20 @@ public class BatchExportService implements IBatchExportService {
         }
     }
 
+    /**
+     * Part 3 request of a finished SIX delivery: one CTR_BATCH_EXPORT row listing every SIX output list.
+     * No SIX output list configured: nothing to filter, so no row is saved (no export job). GENERATED_FILE_IDS is
+     * NOT NULL and an empty list would be stored as '' (NULL in Oracle): the insert would fail with ORA-01400 and
+     * the delivery could never finish (import jobs stuck at 90%).
+     */
     public void persistSixFilteredFileGenerationStubInTx(BatchExportType exportType, GenerationReason generationReason, Version version) {
         String launchingUser = getLaunchingUserByGenerationAction(generationReason);
         List<ReglissList> lists = reglissListRepository.findByDJFormatNotDeleted(ImportFileType.SIX_MAIN_FILE);
         List<Long> generatedFileIds = lists.stream().map(ReglissList::getReference).map(Long::valueOf).collect(Collectors.toList());
+        if (generatedFileIds.isEmpty()) {
+            log.info("No SIX output list ({} lists): no {} request created", ImportFileType.SIX_MAIN_FILE, exportType);
+            return;
+        }
         BatchExportParams exportParams = new BatchExportParams(exportType, generatedFileIds, launchingUser, generationReason, version);
         BatchExport batchExport = new BatchExport(exportParams);
         batchExportRepository.save(batchExport);

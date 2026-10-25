@@ -32,6 +32,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -39,7 +40,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-// TODO: re-add project imports for: ListType, ExportRepositoryImpl, ImportedFile, ImportedFileRepository,
+// TODO: re-add project imports for: ListType, ExportFileWriter, ImportedFile, ImportedFileRepository,
 // BatchJobExecution, BatchJobExecutionRepository, Version, VersionRepository, SixFilters, SixSubFilters,
 // SixFiltersRepository
 
@@ -144,7 +145,7 @@ public class SixXmlGenerationService {
         } catch (IOException e) {
             throw new IllegalStateException("Holding folder " + folder + " could not be created: " + e.getMessage(), e);
         }
-        writeValidatedFile(listType, folder, fileName, activeFilters(listRef));
+        writeValidatedFile(listType, folder, fileName, activeFilters(listRef).orElse(null));   // null: "filters not available"
         log.info("File {} held at {} until its delivery {} is complete", fileName, folder, delivery);
         return folder.resolve(fileName);
     }
@@ -421,18 +422,20 @@ public class SixXmlGenerationService {
     /**
      * Active filters of the list, written in the footer of its CONVERTER file (same repository query as the export).
      * The footer is information only: if the filters cannot be read, the file is still created and the footer says so.
+     *
+     * @return the filters (empty list: "no active filter"); empty Optional when they cannot be read ("not available")
      */
-    private List<SixFilters> activeFilters(String listRef) {
+    private Optional<List<SixFilters>> activeFilters(String listRef) {
         try {
             List<SixFilters> filters = sixFiltersRepository.getFiltersByListRefAndActiveTrueAndDeletedFalse(listRef);
             if (filters == null) {
-                return Collections.emptyList();
+                return Optional.of(Collections.emptyList());
             }
             filters.forEach(f -> f.getActiveSixSubfilters().forEach(SixSubFilters::getActiveSixSubORfilters));   // load now
-            return filters;
+            return Optional.of(filters);
         } catch (RuntimeException e) {
             log.warn("Filters of list {} not read for the footer of its CONVERTER file: {}", listRef, e.getMessage());
-            return null;   // NOSONAR null = "not available" in the footer (empty list = "no active filter")
+            return Optional.empty();
         }
     }
 
