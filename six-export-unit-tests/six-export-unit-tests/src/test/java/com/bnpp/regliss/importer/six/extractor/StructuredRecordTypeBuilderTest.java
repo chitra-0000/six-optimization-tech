@@ -113,6 +113,18 @@ public class StructuredRecordTypeBuilderTest {
         assertEquals("2026-10-04", r.getApplicationDate());
         assertEquals("ISIN related characteristics : reason_for_change : merged", r.getGeneralInformation().getNotes());
         assertTrue(r.getGeneralInformation().getPrograms().getProgram().isEmpty());
+        assertEquals("", r.getGeneralInformation().getSearchCode());
+    }
+
+    /** Targets with a legal basis, one without regime: skipped in the search code (no NullPointerException in the sort). */
+    @Test
+    public void searchCode_targetWithoutRegimeAmongOthers_skipped() {
+        FilteredStructuredFile file = new FilteredStructuredFile();
+        file.setSixTargets(Arrays.asList(target("UK", "L", "T1", null), target(null, "L2", "T2", null),
+                target("EU", "L3", "T3", null)));
+        RecordType r = build(file);
+        assertEquals("EU UK", r.getGeneralInformation().getSearchCode());
+        assertEquals(2, r.getGeneralInformation().getPrograms().getProgram().size());
     }
 
     @Test
