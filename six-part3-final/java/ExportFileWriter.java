@@ -89,7 +89,7 @@ public final class ExportFileWriter {
 
         } catch (JAXBException e) {
             // keep the original behaviour
-            throw new RuntimeException("Failed to marshal ListType to XML", e); // NOSONAR original contract of createFile
+            throw new IllegalStateException("Failed to marshal ListType to XML", e);   // still a RuntimeException for the callers
         } catch (IOException e) {
             // ByteArrayOutputStream never really throws IOException
             throw new UncheckedIOException("Unable to append footer", e);

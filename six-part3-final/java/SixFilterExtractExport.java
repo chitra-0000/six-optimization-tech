@@ -100,6 +100,7 @@ public class SixFilterExtractExport {
                     sixFilteredStore.dropPendingRowsOfJob(run.jobId);
                 }
             });
+            log.debug("SIX export of job {} stopped for every list", run.jobId, stop);
             throw stop.error;
         } finally {
             run.progress.stopKeepAlive();

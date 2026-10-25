@@ -194,6 +194,7 @@ public class SixXmlGenerationService {
             Files.move(held, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
             log.warn("Holding folder and DJ IN folder are on different mounts: {} copied", name);
+            log.debug("Atomic move of {} not supported", name, e);
             Path temp = Files.createTempFile(inDir, name + "_", TMP_EXTENSION);
             try {
                 Files.copy(held, temp, StandardCopyOption.REPLACE_EXISTING);
@@ -211,7 +212,7 @@ public class SixXmlGenerationService {
                 Files.deleteIfExists(folder);
             }
         } catch (DirectoryNotEmptyException e) {
-            // other files are still held there
+            log.debug("Holding folder {} kept: other files are still held there", folder, e);
         } catch (IOException e) {
             log.warn("Holding folder {} could not be removed: {}", folder, e.getMessage());
         }

@@ -204,7 +204,7 @@ public class SixXmlGenerationPoller {
         } catch (SixExportException e) {
             failBuild(childList, build, e);
             return;
-        } catch (OutOfMemoryError e) { // NOSONAR only this list fails: its data are unreachable here, the server continues
+        } catch (OutOfMemoryError e) { // only this list fails: its data are unreachable here, the server continues
             failBuild(childList, build, new SixExportException(SixExportException.Stage.BUILD_XML, build.where, reference,
                     null, build.firstJob(), e));
             return;
@@ -602,8 +602,8 @@ public class SixXmlGenerationPoller {
         private final LocalDateTime aliveSince = LocalDateTime.now().minusMinutes(KO_AFTER_MINUTES);
 
         Liveness(Set<String> currentLists, Set<String> required) {
-            this.currentLists = currentLists;
-            this.required = required;
+            this.currentLists = new HashSet<>(currentLists);
+            this.required = new HashSet<>(required);
         }
 
         List<SixFilteredStore.PollerRow> inProgress(List<SixFilteredStore.PollerRow> open) {

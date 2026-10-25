@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Supplier;
 
 // TODO: re-add project imports for: ReglissBatchProfile, BatchJobExecution, BatchJobExecutionRepository, BatchJobType,
 // BatchExportRepository, VersionRepository, SixXmlGenerationService
@@ -93,11 +92,11 @@ public class SixCleanupService {
         public String getExportSkippedBecause() { return exportSkippedBecause; }
         /** Null when the import part ran. */
         public String getImportSkippedBecause() { return importSkippedBecause; }
-        public List<String> getDelivered() { return delivered; }
-        public List<String> getDiscarded() { return discarded; }
-        public List<String> getNotMoved() { return notMoved; }
+        public List<String> getDelivered() { return new ArrayList<>(delivered); }
+        public List<String> getDiscarded() { return new ArrayList<>(discarded); }
+        public List<String> getNotMoved() { return new ArrayList<>(notMoved); }
         public boolean isExportTablesCleared() { return exportTablesCleared; }
-        public Map<String, Integer> getRawRowsDeleted() { return rawRowsDeleted; }
+        public Map<String, Integer> getRawRowsDeleted() { return new LinkedHashMap<>(rawRowsDeleted); }
 
         @Override
         public String toString() {
@@ -153,9 +152,9 @@ public class SixCleanupService {
         }
         try {
             List<SixFilteredStore.PollerRow> inProgress = rowsInProgress();
-            deleteOlderRawVersions(SixCleanupStore.RawTable.INSTRUMENTS, versionRepository::getLatestVersionIdOfInstruments, inProgress, result);
-            deleteOlderRawVersions(SixCleanupStore.RawTable.STRUCTURED, versionRepository::getLatestVersionIdOfStructure, inProgress, result);
-            deleteOlderRawVersions(SixCleanupStore.RawTable.OPTIONS, versionRepository::getLatestVersionIdOfOptions, inProgress, result);
+            deleteOlderRawVersions(SixCleanupStore.RawTable.INSTRUMENTS, versionRepository.getLatestVersionIdOfInstruments(), inProgress, result);
+            deleteOlderRawVersions(SixCleanupStore.RawTable.STRUCTURED, versionRepository.getLatestVersionIdOfStructure(), inProgress, result);
+            deleteOlderRawVersions(SixCleanupStore.RawTable.OPTIONS, versionRepository.getLatestVersionIdOfOptions(), inProgress, result);
         } catch (RuntimeException e) {
             log.error("SIX cleanup: import part stopped (the next run continues): {}", SixExportException.rootCause(e), e);
             result.importSkippedBecause = "error: " + SixExportException.rootCause(e);
@@ -373,9 +372,8 @@ public class SixCleanupService {
      * Deletes the versions older than both the latest one and the lowest version of this table still used by an export
      * list in progress (an export of one file type reads the other raw tables at their latest version only).
      */
-    private void deleteOlderRawVersions(SixCleanupStore.RawTable raw, Supplier<Long> latestVersion,
+    private void deleteOlderRawVersions(SixCleanupStore.RawTable raw, Long latest,
                                         List<SixFilteredStore.PollerRow> inProgress, Result result) {
-        Long latest = latestVersion.get();
         if (latest == null) {
             log.info("SIX cleanup: no {} version, nothing to delete", raw.getTable());
             return;

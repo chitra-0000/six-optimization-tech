@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.PostConstruct;
+import javax.sql.DataSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -121,7 +122,11 @@ public class SixFileFilterService {
     @PostConstruct
     void initReadTemplate() {
         JdbcTemplate shared = jdbcTemplate.getJdbcTemplate();
-        JdbcTemplate reads = new JdbcTemplate(shared.getDataSource());
+        DataSource dataSource = shared.getDataSource();
+        if (dataSource == null) {
+            throw new IllegalStateException("SIX filter reads: the shared JdbcTemplate has no DataSource");
+        }
+        JdbcTemplate reads = new JdbcTemplate(dataSource);
         reads.setExceptionTranslator(shared.getExceptionTranslator());
         reads.setQueryTimeout(shared.getQueryTimeout());
         reads.setMaxRows(shared.getMaxRows());
