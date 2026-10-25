@@ -10,6 +10,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
@@ -121,8 +122,9 @@ public class InstrumentRecordTypeBuilder {
                 .distinct().collect(Collectors.joining(" | "));
     }
 
+    /** Regimes of the targets with a legal basis, sorted, each once (a target without regime is skipped, as for the programs). */
     private String getSearchCode(FilteredInstrumentFile file) {
-        return file.getSixTargets().stream().filter(target -> target.getLegalBasis() != null).map(FilteredSixTarget::getRegime).distinct().sorted().collect(Collectors.joining(" "));
+        return file.getSixTargets().stream().filter(target -> target.getLegalBasis() != null).map(FilteredSixTarget::getRegime).filter(Objects::nonNull).distinct().sorted().collect(Collectors.joining(" "));
     }
 
     private ExtraEntityRecordDetailType getExtraEntityRecordDetailType(FilteredInstrumentFile file) {
