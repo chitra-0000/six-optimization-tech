@@ -160,6 +160,13 @@ public class BatchExportServiceTest {
     }
 
     @Test
+    public void sixFilteredRequest_noOutputList_nothingSaved() {
+        when(reglissListRepository.findByDJFormatNotDeleted(ImportFileType.SIX_MAIN_FILE)).thenReturn(Collections.emptyList());
+        service.persistSixFilteredFileGenerationStubInTx(BatchExportType.SIX_FILTERED_FILE_GENERATION, GenerationReason.GENERATION, version);
+        verify(batchExportRepository, never()).save(any());
+    }
+
+    @Test
     public void deleteProcessed() {
         service.deleteProcessedBatchExport(3L);
         verify(batchExportRepository).deleteById(3L);
