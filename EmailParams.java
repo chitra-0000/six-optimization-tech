@@ -51,8 +51,8 @@ public class EmailParams {
     public static class UsersExpiredDownloadRights extends EmailBaseParams implements Serializable {
         public String expireImportDate;
         public String expireExportDate;
-        public ArrayList<String> usersWithImportExpired = new ArrayList<>();
-        public ArrayList<String> usersWithExportExpired = new ArrayList<>();
+        public List<String> usersWithImportExpired;
+        public List<String> usersWithExportExpired;
     }
 
     public static class EmailDjImportZipError extends EmailBaseParams implements Serializable {
