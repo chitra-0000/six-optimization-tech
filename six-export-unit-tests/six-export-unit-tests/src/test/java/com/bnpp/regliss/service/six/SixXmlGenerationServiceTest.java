@@ -105,59 +105,49 @@ public class SixXmlGenerationServiceTest {
         }
     }
 
-    // ------------------------------------------------------------------ files straight into DJ IN
+    // ------------------------------------------------------------------ file name and errors
 
     @Test
-    public void createAndUploadFile_ok_nameFromTheInstrumentFile() throws IOException {
-        assertEquals("File generation OK", service.createAndUploadFile(listType(), jobIds()));
-        assertEquals(Collections.singletonList("CONVERTER-UK_3_20261004_101500.xml"), names(in));
-        String xml = new String(Files.readAllBytes(in.resolve("CONVERTER-UK_3_20261004_101500.xml")), StandardCharsets.UTF_8);
-        assertTrue(xml, xml.contains("<!-- filters not available -->"));            // list unknown here
-    }
-
-    @Test
-    public void createAndUploadFile_errorOnlyLogged() throws IOException {
-        Files.write(service.customAutomaticXsd.toPath(), "<not a schema".getBytes(StandardCharsets.UTF_8));
-        assertEquals("File generation KO", service.createAndUploadFile(listType(), jobIds()));
-        assertEquals(Collections.emptyList(), names(in));                                 // the .tmp file is removed
-    }
-
-    @Test
-    public void createAndUploadFileOrThrow_errorsThrown() throws IOException {
+    public void heldFile_errorsThrown_noFileLeft() throws IOException {
         Files.write(service.customAutomaticXsd.toPath(), XSD.replace("\"list\"", "\"other\"").getBytes(StandardCharsets.UTF_8));
         ListType list = listType();
         Set<Long> ids = jobIds();
+        Path folder = holding.resolve("D").resolve("951");
         try {
-            service.createAndUploadFileOrThrow(list, ids);
+            service.createHeldFileOrThrow(list, ids, "D", "951", null);
             fail();
         } catch (IllegalStateException e) {
             assertTrue(e.getMessage(), e.getMessage().startsWith("CONVERTER file CONVERTER-UK_3_20261004_101500.xml not created"));
         }
+        assertEquals(Collections.emptyList(), names(folder));                                // the .tmp file is removed
         try {
-            service.createAndUploadFileOrThrow(null, ids);
+            service.createHeldFileOrThrow(null, ids, "D", "951", null);
             fail();
         } catch (NullPointerException | IllegalArgumentException e) {
-            assertEquals(Collections.emptyList(), names(in));                             // runtime errors kept as they are
+            assertEquals(Collections.emptyList(), names(folder));                            // runtime errors kept as they are
         }
     }
 
     @Test
-    public void fileName_regeneration_timestamp_orLatestInstrumentVersion() throws IOException {
+    public void fileName_regeneration_timestamp_orLatestInstrumentVersion() {
         jobs("x REGENERATION");
-        String name = service.createAndUploadFileOrThrow(listType(), jobIds());
+        Path regenerated = service.createHeldFileOrThrow(listType(), jobIds(), "R", "951", null);
+        String name = regenerated.getFileName().toString();
         assertTrue(name, name.matches("CONVERTER-UK_3_\\d{8}_\\d{6}\\.xml"));
 
         jobs(null, "GENERATION");
         Version latest = mock(Version.class);
         when(latest.getId()).thenReturn(100L);
         when(versionRepository.getLatestVersionOfInstruments()).thenReturn(latest);
-        assertEquals("CONVERTER-UK_3_20261004_101500.xml", service.createAndUploadFileOrThrow(listType(), jobIds()));
+        assertEquals("CONVERTER-UK_3_20261004_101500.xml",
+                service.createHeldFileOrThrow(listType(), jobIds(), "G1", "951", null).getFileName().toString());
 
         ImportedFile noDate = mock(ImportedFile.class);
         when(noDate.getOriginalFileName()).thenReturn("README.xml");
         when(importedFileRepository.findByVersionId(101L)).thenReturn(noDate);
         when(latest.getId()).thenReturn(101L);
-        assertEquals("CONVERTER-UK_3_.xml", service.createAndUploadFileOrThrow(listType(), jobIds()));
+        assertEquals("CONVERTER-UK_3_.xml",
+                service.createHeldFileOrThrow(listType(), jobIds(), "G2", "951", null).getFileName().toString());
     }
 
     // ------------------------------------------------------------------ holding folder
@@ -189,7 +179,7 @@ public class SixXmlGenerationServiceTest {
     @Test
     public void heldFile_filtersNotReadable_orNone() throws IOException {
         when(sixFiltersRepository.getFiltersByListRefAndActiveTrueAndDeletedFalse("951")).thenThrow(new IllegalStateException("db"));
-        Path file = service.createHeldFileOrThrow(listType(), jobIds(), "D", "951");
+        Path file = service.createHeldFileOrThrow(listType(), jobIds(), "D", "951", null);
         assertTrue(new String(Files.readAllBytes(file), StandardCharsets.UTF_8).contains("<!-- filters not available -->"));
 
         when(sixFiltersRepository.getFiltersByListRefAndActiveTrueAndDeletedFalse("235")).thenReturn(null);
@@ -224,7 +214,7 @@ public class SixXmlGenerationServiceTest {
         ListType list = listType();
         Set<Long> ids = jobIds();
         try {
-            service.createHeldFileOrThrow(list, ids, "D", "951");
+            service.createHeldFileOrThrow(list, ids, "D", "951", null);
             fail();
         } catch (IllegalStateException e) {
             assertTrue(e.getMessage(), e.getMessage().startsWith("Holding folder "));
