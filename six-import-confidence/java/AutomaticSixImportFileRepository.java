@@ -117,19 +117,24 @@ public class AutomaticSixImportFileRepository {
         try {
             // ATOMIC_MOVE = a single rename(): it replaces a same-named file in the target folder in one step
             // and fails with NoSuchFileException if another thread already moved the source.
-            Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            moveFile(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
             return true;
         } catch (NoSuchFileException alreadyMoved) {
             return false;
         } catch (AtomicMoveNotSupportedException differentFileSystem) {
             // only if the target folder is on another mount: copy + delete (no longer atomic, still safe if the source is gone)
             try {
-                Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                moveFile(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 return true;
             } catch (NoSuchFileException alreadyMoved) {
                 return false;
             }
         }
+    }
+
+    /** Files.move (package-private: the unit test simulates a target folder on another mount). */
+    void moveFile(Path source, Path target, StandardCopyOption option) throws IOException {
+        Files.move(source, target, option);
     }
 
     public void moveToErrorDirectory(AutomaticImportFeedBase feed) {

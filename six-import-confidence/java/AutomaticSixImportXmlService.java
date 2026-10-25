@@ -224,7 +224,7 @@ public class AutomaticSixImportXmlService {
         for (File f : stale) {
             if (f.lastModified() < limit) {
                 try {
-                    Files.deleteIfExists(f.toPath());
+                    deleteIfExists(f);
                     log.info("Removed stale SIX import temp file {}", f.getAbsolutePath());
                 } catch (IOException e) {
                     log.warn("Could not remove stale SIX import temp file {}: {}", f.getAbsolutePath(), e.getMessage());
@@ -233,16 +233,21 @@ public class AutomaticSixImportXmlService {
         }
     }
 
-    private static void deleteQuietly(File f) {
+    private void deleteQuietly(File f) {
         if (f == null) {
             return;
         }
         try {
-            Files.deleteIfExists(f.toPath());
+            deleteIfExists(f);
         } catch (IOException e) {
             log.warn("Could not delete SIX import temp file {} now ({}), it will be deleted at JVM exit",
                     f.getAbsolutePath(), e.getMessage());
             f.deleteOnExit();
         }
+    }
+
+    /** Files.deleteIfExists (package-private: the unit test simulates a file that cannot be deleted). */
+    void deleteIfExists(File f) throws IOException {
+        Files.deleteIfExists(f.toPath());
     }
 }
